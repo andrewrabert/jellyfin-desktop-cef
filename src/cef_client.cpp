@@ -100,15 +100,27 @@ void Client::sendMouseClick(int x, int y, bool down, int button, int clickCount,
     CefMouseEvent event;
     event.x = x;
     event.y = y;
-    event.modifiers = modifiers;
 
     CefBrowserHost::MouseButtonType btn_type;
     switch (button) {
-        case 1: btn_type = MBT_LEFT; break;
-        case 2: btn_type = MBT_MIDDLE; break;
-        case 3: btn_type = MBT_RIGHT; break;
-        default: btn_type = MBT_LEFT; break;
+        case 1:
+            btn_type = MBT_LEFT;
+            if (down) modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON;
+            break;
+        case 2:
+            btn_type = MBT_MIDDLE;
+            if (down) modifiers |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
+            break;
+        case 3:
+            btn_type = MBT_RIGHT;
+            if (down) modifiers |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
+            break;
+        default:
+            btn_type = MBT_LEFT;
+            if (down) modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON;
+            break;
     }
+    event.modifiers = modifiers;
 
     browser_->GetHost()->SendMouseClickEvent(event, btn_type, !down, clickCount);
 }

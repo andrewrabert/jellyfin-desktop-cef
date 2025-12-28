@@ -295,6 +295,7 @@ int main(int argc, char* argv[]) {
                 last_click_y = y;
                 last_click_button = btn;
 
+                client->sendFocus(true);  // Ensure browser has focus
                 client->sendMouseClick(x, y, true, btn, click_count, mods);
             } else if (event.type == SDL_MOUSEBUTTONUP) {
                 client->sendMouseClick(event.button.x, event.button.y, false, event.button.button, click_count, mods);
