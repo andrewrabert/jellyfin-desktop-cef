@@ -2,6 +2,7 @@
 
 #include "include/cef_client.h"
 #include "include/cef_render_handler.h"
+#include <atomic>
 #include <functional>
 
 class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler {
@@ -30,7 +31,7 @@ private:
     int width_;
     int height_;
     PaintCallback on_paint_;
-    bool is_closed_ = false;
+    std::atomic<bool> is_closed_ = false;
 
     IMPLEMENT_REFCOUNTING(Client);
     DISALLOW_COPY_AND_ASSIGN(Client);

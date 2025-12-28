@@ -16,6 +16,9 @@ find_package(SDL2 REQUIRED)
 # OpenGL
 find_package(OpenGL REQUIRED)
 
+# GLEW
+find_package(GLEW REQUIRED)
+
 add_executable(jellyfin-desktop
     src/main.cpp
     src/renderer.cpp
@@ -33,6 +36,7 @@ target_link_libraries(jellyfin-desktop PRIVATE
     ${CEF_LIBRARIES}
     ${SDL2_LIBRARIES}
     OpenGL::GL
+    GLEW::GLEW
 )
 
 # Copy CEF resources to build directory
