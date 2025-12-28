@@ -35,11 +35,13 @@ void App::OnBeforeCommandLineProcessing(const CefString& process_type,
     command_line->AppendSwitch("disable-translate");
     command_line->AppendSwitch("disable-domain-reliability");
     command_line->AppendSwitch("disable-breakpad");
+    command_line->AppendSwitch("disable-notifications");
     command_line->AppendSwitch("no-pings");
+    command_line->AppendSwitch("bwsi");  // Browse without sign-in
     command_line->AppendSwitchWithValue("disable-features",
-        "PushMessaging,BackgroundSync,SafeBrowsing,NetworkService,"
-        "Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,"
-        "AcceptCHFrame,AutofillServerCommunication,CertificateTransparencyComponentUpdater");
+        "PushMessaging,BackgroundSync,SafeBrowsing,Translate,OptimizationHints,"
+        "MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutofillServerCommunication,"
+        "CertificateTransparencyComponentUpdater,SyncNotificationServiceWhenSignedIn");
     // Empty API keys prevent any Google API calls
     command_line->AppendSwitchWithValue("google-api-key", "");
     command_line->AppendSwitchWithValue("google-default-client-id", "");
