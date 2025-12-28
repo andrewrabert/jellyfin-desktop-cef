@@ -3,13 +3,14 @@
 #include "include/cef_client.h"
 #include "include/cef_render_handler.h"
 #include "include/cef_display_handler.h"
+#include "include/cef_load_handler.h"
 #include <atomic>
 #include <functional>
 
 // Message callback for player commands from renderer
 using PlayerMessageCallback = std::function<void(const std::string& cmd, const std::string& arg, int intArg)>;
 
-class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler {
+class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler {
 public:
     using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
 
@@ -19,6 +20,7 @@ public:
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+    CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
     bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<CefFrame> frame,
                                    CefProcessId source_process,
@@ -40,6 +42,9 @@ public:
     // CefLifeSpanHandler
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
+
+    // CefLoadHandler
+    void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override;
 
     bool isClosed() const { return is_closed_; }
 

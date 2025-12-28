@@ -86,6 +86,13 @@ void Client::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
     is_closed_ = true;
 }
 
+void Client::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) {
+    if (frame->IsMain()) {
+        // Set focus after page load for proper visual focus on autofocus elements
+        browser->GetHost()->SetFocus(true);
+    }
+}
+
 void Client::sendMouseMove(int x, int y, int modifiers) {
     if (!browser_) return;
     CefMouseEvent event;

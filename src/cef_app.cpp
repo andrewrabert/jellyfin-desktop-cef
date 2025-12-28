@@ -36,12 +36,14 @@ void App::OnBeforeCommandLineProcessing(const CefString& process_type,
     command_line->AppendSwitch("disable-domain-reliability");
     command_line->AppendSwitch("disable-breakpad");
     command_line->AppendSwitch("disable-notifications");
+    command_line->AppendSwitch("disable-spell-checking");
     command_line->AppendSwitch("no-pings");
     command_line->AppendSwitch("bwsi");  // Browse without sign-in
     command_line->AppendSwitchWithValue("disable-features",
         "PushMessaging,BackgroundSync,SafeBrowsing,Translate,OptimizationHints,"
         "MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutofillServerCommunication,"
-        "CertificateTransparencyComponentUpdater,SyncNotificationServiceWhenSignedIn");
+        "CertificateTransparencyComponentUpdater,SyncNotificationServiceWhenSignedIn,"
+        "SpellCheck,SpellCheckService");
     // Empty API keys prevent any Google API calls
     command_line->AppendSwitchWithValue("google-api-key", "");
     command_line->AppendSwitchWithValue("google-default-client-id", "");
@@ -110,7 +112,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             { key: 'video', order: 2 }
         ],
         settings: {
-            main: { enableMPV: true, fullscreen: false },
+            main: { enableMPV: true, fullscreen: false, userWebClient: '' },
             audio: { channels: '2.0' },
             video: {
                 force_transcode_dovi: false,
@@ -234,6 +236,11 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             },
             exit() {
                 console.log('[Native] exit requested');
+            },
+            cancelServerConnectivity() {
+                if (window.jmpCheckServerConnectivity && window.jmpCheckServerConnectivity.abort) {
+                    window.jmpCheckServerConnectivity.abort();
+                }
             }
         },
         settings: {

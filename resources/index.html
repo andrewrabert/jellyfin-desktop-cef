@@ -1,103 +1,22 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        html, body {
-            width: 100%;
-            height: 100%;
-            background: transparent;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            overflow: hidden;
-        }
-        .connect-page {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.85);
-        }
-        h1 {
-            font-size: 2rem;
-            margin-bottom: 30px;
-            color: #00a4dc;
-        }
-        .input-group {
-            display: flex;
-            gap: 10px;
-            width: 100%;
-            max-width: 500px;
-            padding: 0 20px;
-        }
-        input[type="url"] {
-            flex: 1;
-            padding: 12px 16px;
-            font-size: 1rem;
-            border: 2px solid #333;
-            border-radius: 8px;
-            background: #1a1a1a;
-            color: white;
-            outline: none;
-        }
-        input[type="url"]:focus {
-            border-color: #00a4dc;
-        }
-        input[type="url"]::placeholder {
-            color: #666;
-        }
-        button {
-            padding: 12px 24px;
-            font-size: 1rem;
-            font-weight: 600;
-            border: none;
-            border-radius: 8px;
-            background: #00a4dc;
-            color: white;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        button:hover {
-            background: #0088b8;
-        }
-        button:active {
-            background: #006a91;
-        }
-    </style>
+    <meta charset="utf-8">
+    <title>Jellyfin</title>
+    <link rel="stylesheet" href="find-webclient.css">
 </head>
 <body>
-    <div class="connect-page">
-        <h1>Jellyfin</h1>
-        <div class="input-group">
-            <input type="url" id="serverUrl" placeholder="http://localhost:8096" autofocus>
-            <button id="connectBtn">Connect</button>
-        </div>
+    <div id="container">
+        <img class="logo" src="logo.png">
+        <form id="connect-form">
+            <h1 id="title"></h1>
+            <div id="spinner"></div>
+            <input type="text" id="address" autofocus>
+            <button id="connect-button" type="submit"></button>
+        </form>
     </div>
-    <script>
-        const urlInput = document.getElementById('serverUrl');
-        const connectBtn = document.getElementById('connectBtn');
-
-        function connect() {
-            let url = urlInput.value.trim();
-            if (!url) {
-                url = 'http://localhost:8096';
-            }
-            // Ensure URL has protocol
-            if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                url = 'http://' + url;
-            }
-            window.location.href = url;
-        }
-
-        connectBtn.addEventListener('click', connect);
-        urlInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') connect();
-        });
-    </script>
+    <script src="find-webclient.lang.js"></script>
+    <script src="connectivityHelper.js"></script>
+    <script src="find-webclient.js"></script>
 </body>
 </html>
