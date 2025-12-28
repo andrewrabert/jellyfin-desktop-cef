@@ -39,6 +39,14 @@ target_link_libraries(jellyfin-desktop PRIVATE
     GLEW::GLEW
 )
 
+# Linux RPATH configuration for libcef.so loading
+if(UNIX AND NOT APPLE)
+    set_target_properties(jellyfin-desktop PROPERTIES
+        INSTALL_RPATH "$ORIGIN"
+        BUILD_WITH_INSTALL_RPATH TRUE
+    )
+endif()
+
 # Copy CEF resources to build directory
 add_custom_command(TARGET jellyfin-desktop POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
