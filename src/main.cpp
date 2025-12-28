@@ -3,6 +3,9 @@
 #include <SDL2/SDL_opengl.h>
 #include <iostream>
 #include <filesystem>
+#include <atomic>
+#include <vector>
+#include <cstring>
 
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
@@ -101,13 +104,15 @@ int main(int argc, char* argv[]) {
     }
 
     // Create browser
-    bool texture_dirty = false;
-    const void* paint_buffer = nullptr;
+    std::atomic<bool> texture_dirty{false};
+    std::vector<uint8_t> paint_buffer_copy;
     int paint_width = 0, paint_height = 0;
 
     CefRefPtr<Client> client(new Client(width, height,
         [&](const void* buffer, int w, int h) {
-            paint_buffer = buffer;
+            size_t size = w * h * 4;
+            paint_buffer_copy.resize(size);
+            memcpy(paint_buffer_copy.data(), buffer, size);
             paint_width = w;
             paint_height = h;
             texture_dirty = true;
@@ -136,8 +141,8 @@ int main(int argc, char* argv[]) {
 
         CefDoMessageLoopWork();
 
-        if (texture_dirty && paint_buffer) {
-            renderer.updateTexture(paint_buffer, paint_width, paint_height);
+        if (texture_dirty && !paint_buffer_copy.empty()) {
+            renderer.updateTexture(paint_buffer_copy.data(), paint_width, paint_height);
             texture_dirty = false;
         }
 
