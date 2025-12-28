@@ -8,11 +8,17 @@
 MpvPlayerVk::MpvPlayerVk() = default;
 
 MpvPlayerVk::~MpvPlayerVk() {
+    cleanup();
+}
+
+void MpvPlayerVk::cleanup() {
     if (render_ctx_) {
         mpv_render_context_free(render_ctx_);
+        render_ctx_ = nullptr;
     }
     if (mpv_) {
         mpv_terminate_destroy(mpv_);
+        mpv_ = nullptr;
     }
 }
 

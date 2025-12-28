@@ -16,6 +16,7 @@ public:
     ~MpvPlayerVk();
 
     bool init(VulkanContext* vk);
+    void cleanup();
     bool loadFile(const std::string& path);
 
     // Render to swapchain image

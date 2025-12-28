@@ -707,6 +707,10 @@ void VulkanCompositor::destroyOverlayResources() {
 void VulkanCompositor::cleanup() {
     if (!vk_) return;
     VkDevice device = vk_->device();
+    if (!device) {
+        vk_ = nullptr;
+        return;
+    }
 
     vkDeviceWaitIdle(device);
 
@@ -732,4 +736,6 @@ void VulkanCompositor::cleanup() {
         vkDestroyRenderPass(device, render_pass_, nullptr);
         render_pass_ = VK_NULL_HANDLE;
     }
+
+    vk_ = nullptr;
 }

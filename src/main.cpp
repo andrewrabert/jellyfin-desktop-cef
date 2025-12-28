@@ -483,11 +483,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Cleanup
+    // Cleanup - order matters: wait for GPU, destroy resources, then window
     vkDeviceWaitIdle(vk.device());
     vkDestroySemaphore(vk.device(), image_available, nullptr);
     vkDestroySemaphore(vk.device(), render_finished, nullptr);
     vkDestroyFence(vk.device(), in_flight, nullptr);
+
+    mpv.cleanup();
+    compositor.cleanup();
+    vk.cleanup();
 
     CefShutdown();
     SDL_DestroyWindow(window);
