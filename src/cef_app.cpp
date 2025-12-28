@@ -170,11 +170,24 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             // Methods
             load(url, options, streamdata, audioStream, subtitleStream, callback) {
                 console.log('[Native] player.load:', url);
+                if (callback) {
+                    // Wait for playing signal before calling callback
+                    const onPlaying = () => {
+                        this.playing.disconnect(onPlaying);
+                        this.error.disconnect(onError);
+                        callback();
+                    };
+                    const onError = () => {
+                        this.playing.disconnect(onPlaying);
+                        this.error.disconnect(onError);
+                        callback();
+                    };
+                    this.playing.connect(onPlaying);
+                    this.error.connect(onError);
+                }
                 if (window.jmpNative && window.jmpNative.playerLoad) {
                     window.jmpNative.playerLoad(url, options?.startMilliseconds || 0, audioStream || -1, subtitleStream || -1);
                 }
-                // Simulate async callback
-                if (callback) setTimeout(callback, 100);
             },
             stop() {
                 console.log('[Native] player.stop');
