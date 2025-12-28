@@ -1,3 +1,4 @@
+#include <GL/glew.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_opengl.h>
 #include <iostream>
@@ -57,6 +58,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // GLEW initialization
+    glewExperimental = GL_TRUE;
+    GLenum glew_err = glewInit();
+    if (glew_err != GLEW_OK) {
+        std::cerr << "glewInit failed: " << glewGetErrorString(glew_err) << std::endl;
+        SDL_GL_DeleteContext(gl_context);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
     SDL_GL_SetSwapInterval(1);
     std::cout << "OpenGL Version: " << glGetString(GL_VERSION) << std::endl;
 
@@ -108,7 +120,7 @@ int main(int argc, char* argv[]) {
     CefBrowserSettings browser_settings;
 
     // Load local HTML file
-    std::string html_path = "file://" + (exe_path.parent_path() / "resources" / "index.html").string();
+    std::string html_path = "file://" + (exe_path / "resources" / "index.html").string();
     std::cout << "Loading: " << html_path << std::endl;
 
     CefBrowserHost::CreateBrowser(window_info, client, html_path, browser_settings, nullptr, nullptr);
