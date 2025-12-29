@@ -208,6 +208,15 @@ int main(int argc, char* argv[]) {
 
     CefBrowserSettings browser_settings;
     browser_settings.background_color = 0;
+    // Match CEF frame rate to display refresh rate
+    SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
+    if (mode && mode->refresh_rate > 0) {
+        browser_settings.windowless_frame_rate = static_cast<int>(mode->refresh_rate);
+        std::cout << "CEF frame rate: " << mode->refresh_rate << " Hz" << std::endl;
+    } else {
+        browser_settings.windowless_frame_rate = 60;
+    }
 
     std::string html_path = "file://" + (exe_path / "resources" / "index.html").string();
     std::cout << "Loading: " << html_path << std::endl;
