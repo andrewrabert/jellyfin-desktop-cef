@@ -358,6 +358,11 @@ int main(int argc, char* argv[]) {
             if (event.type == SDL_EVENT_MOUSE_MOTION) {
                 mouse_x = static_cast<int>(event.motion.x);
                 mouse_y = static_cast<int>(event.motion.y);
+                // Include mouse button state for drag operations (scrollbar click-hold, etc.)
+                SDL_MouseButtonFlags buttons = SDL_GetMouseState(nullptr, nullptr);
+                if (buttons & SDL_BUTTON_LMASK) mods |= (1 << 5);  // EVENTFLAG_LEFT_MOUSE_BUTTON
+                if (buttons & SDL_BUTTON_MMASK) mods |= (1 << 6);  // EVENTFLAG_MIDDLE_MOUSE_BUTTON
+                if (buttons & SDL_BUTTON_RMASK) mods |= (1 << 7);  // EVENTFLAG_RIGHT_MOUSE_BUTTON
                 client->sendMouseMove(mouse_x, mouse_y, mods);
             } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 int x = static_cast<int>(event.button.x);
