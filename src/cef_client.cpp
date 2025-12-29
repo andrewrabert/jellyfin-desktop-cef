@@ -2,6 +2,7 @@
 #include "settings.h"
 #include <iostream>
 #include <unistd.h>  // For dup()
+#include <sys/wait.h>  // For WIFEXITED, WEXITSTATUS
 
 Client::Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg,
                AcceleratedPaintCallback on_accel_paint)
@@ -282,4 +283,82 @@ void Client::updatePosition(double positionMs) {
 
 void Client::updateDuration(double durationMs) {
     executeJS("if(window._nativeUpdateDuration) window._nativeUpdateDuration(" + std::to_string(durationMs) + ");");
+}
+
+bool Client::RunContextMenu(CefRefPtr<CefBrowser> browser,
+                            CefRefPtr<CefFrame> frame,
+                            CefRefPtr<CefContextMenuParams> params,
+                            CefRefPtr<CefMenuModel> model,
+                            CefRefPtr<CefRunContextMenuCallback> callback) {
+    if (model->GetCount() == 0) {
+        callback->Cancel();
+        return true;
+    }
+
+    // Build menu items
+    std::string menu_input;
+    for (size_t i = 0; i < model->GetCount(); i++) {
+        if (model->GetTypeAt(i) == MENUITEMTYPE_SEPARATOR) continue;
+        if (!model->IsEnabledAt(i)) continue;
+        std::string label = model->GetLabelAt(i).ToString();
+        if (label.empty()) continue;
+        menu_input += label + "\n";
+    }
+
+    if (menu_input.empty()) {
+        callback->Cancel();
+        return true;
+    }
+
+    // Try menu commands in order: bemenu (Wayland), wofi, rofi, dmenu
+    const char* menu_cmds[] = {"bemenu", "wofi -d", "rofi -dmenu", "dmenu", nullptr};
+    std::string selection;
+
+    for (int i = 0; menu_cmds[i]; i++) {
+        // Use printf %s to safely handle special characters in labels
+        std::string cmd = "printf '%s' \"";
+        for (char c : menu_input) {
+            if (c == '"' || c == '\\' || c == '$' || c == '`') cmd += '\\';
+            cmd += c;
+        }
+        cmd += "\" | ";
+        cmd += menu_cmds[i];
+        cmd += " 2>/dev/null";
+
+        FILE* pipe = popen(cmd.c_str(), "r");
+        if (!pipe) continue;
+
+        char buf[256];
+        while (fgets(buf, sizeof(buf), pipe)) {
+            selection += buf;
+        }
+        int status = pclose(pipe);
+
+        // If command succeeded (exit 0) and we got output, use it
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && !selection.empty()) {
+            break;
+        }
+        selection.clear();
+    }
+
+    // Trim newline
+    while (!selection.empty() && (selection.back() == '\n' || selection.back() == '\r')) {
+        selection.pop_back();
+    }
+
+    if (selection.empty()) {
+        callback->Cancel();
+        return true;
+    }
+
+    // Find matching command
+    for (size_t i = 0; i < model->GetCount(); i++) {
+        if (model->GetLabelAt(i).ToString() == selection) {
+            callback->Continue(model->GetCommandIdAt(i), EVENTFLAG_NONE);
+            return true;
+        }
+    }
+
+    callback->Cancel();
+    return true;
 }

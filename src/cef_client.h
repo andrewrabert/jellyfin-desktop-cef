@@ -4,6 +4,7 @@
 #include "include/cef_render_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_context_menu_handler.h"
 #include <atomic>
 #include <functional>
 #include <vector>
@@ -27,7 +28,7 @@ struct AcceleratedPaintInfo {
     std::vector<DmaBufPlane> planes;
 };
 
-class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler {
+class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler, public CefContextMenuHandler {
 public:
     using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
     using AcceleratedPaintCallback = std::function<void(const AcceleratedPaintInfo& info)>;
@@ -40,6 +41,7 @@ public:
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+    CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
     bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<CefFrame> frame,
                                    CefProcessId source_process,
@@ -67,6 +69,13 @@ public:
 
     // CefLoadHandler
     void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override;
+
+    // CefContextMenuHandler
+    bool RunContextMenu(CefRefPtr<CefBrowser> browser,
+                        CefRefPtr<CefFrame> frame,
+                        CefRefPtr<CefContextMenuParams> params,
+                        CefRefPtr<CefMenuModel> model,
+                        CefRefPtr<CefRunContextMenuCallback> callback) override;
 
     bool isClosed() const { return is_closed_; }
 
