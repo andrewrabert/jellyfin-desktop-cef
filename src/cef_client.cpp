@@ -1,13 +1,14 @@
 #include "cef_client.h"
+#include "menu_overlay.h"
 #include "settings.h"
 #include <iostream>
 #include <unistd.h>  // For dup()
-#include <sys/wait.h>  // For WIFEXITED, WEXITSTATUS
 
 Client::Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg,
-               AcceleratedPaintCallback on_accel_paint)
+               AcceleratedPaintCallback on_accel_paint, MenuOverlay* menu)
     : width_(width), height_(height), on_paint_(std::move(on_paint)),
-      on_player_msg_(std::move(on_player_msg)), on_accel_paint_(std::move(on_accel_paint)) {}
+      on_player_msg_(std::move(on_player_msg)), on_accel_paint_(std::move(on_accel_paint)),
+      menu_(menu) {}
 
 bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                                cef_log_severity_t level,
@@ -142,6 +143,9 @@ void Client::sendMouseMove(int x, int y, int modifiers) {
 
 void Client::sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) {
     if (!browser_) return;
+    if (button == 3) {
+        std::cerr << "[Mouse] Right-click " << (down ? "DOWN" : "UP") << " at " << x << "," << y << std::endl;
+    }
     CefMouseEvent event;
     event.x = x;
     event.y = y;
@@ -290,75 +294,35 @@ bool Client::RunContextMenu(CefRefPtr<CefBrowser> browser,
                             CefRefPtr<CefContextMenuParams> params,
                             CefRefPtr<CefMenuModel> model,
                             CefRefPtr<CefRunContextMenuCallback> callback) {
-    if (model->GetCount() == 0) {
+    std::cerr << "[ContextMenu] RunContextMenu called, items=" << model->GetCount()
+              << " pos=" << params->GetXCoord() << "," << params->GetYCoord()
+              << " menu_=" << (menu_ ? "yes" : "no") << std::endl;
+
+    if (!menu_ || model->GetCount() == 0) {
+        std::cerr << "[ContextMenu] Cancelled (no menu or no items)" << std::endl;
         callback->Cancel();
         return true;
     }
 
     // Build menu items
-    std::string menu_input;
+    std::vector<MenuItem> items;
     for (size_t i = 0; i < model->GetCount(); i++) {
         if (model->GetTypeAt(i) == MENUITEMTYPE_SEPARATOR) continue;
-        if (!model->IsEnabledAt(i)) continue;
         std::string label = model->GetLabelAt(i).ToString();
         if (label.empty()) continue;
-        menu_input += label + "\n";
+        items.push_back({
+            model->GetCommandIdAt(i),
+            label,
+            model->IsEnabledAt(i)
+        });
     }
 
-    if (menu_input.empty()) {
+    if (items.empty()) {
         callback->Cancel();
         return true;
     }
 
-    // Try menu commands in order: bemenu (Wayland), wofi, rofi, dmenu
-    const char* menu_cmds[] = {"bemenu", "wofi -d", "rofi -dmenu", "dmenu", nullptr};
-    std::string selection;
-
-    for (int i = 0; menu_cmds[i]; i++) {
-        // Use printf %s to safely handle special characters in labels
-        std::string cmd = "printf '%s' \"";
-        for (char c : menu_input) {
-            if (c == '"' || c == '\\' || c == '$' || c == '`') cmd += '\\';
-            cmd += c;
-        }
-        cmd += "\" | ";
-        cmd += menu_cmds[i];
-        cmd += " 2>/dev/null";
-
-        FILE* pipe = popen(cmd.c_str(), "r");
-        if (!pipe) continue;
-
-        char buf[256];
-        while (fgets(buf, sizeof(buf), pipe)) {
-            selection += buf;
-        }
-        int status = pclose(pipe);
-
-        // If command succeeded (exit 0) and we got output, use it
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && !selection.empty()) {
-            break;
-        }
-        selection.clear();
-    }
-
-    // Trim newline
-    while (!selection.empty() && (selection.back() == '\n' || selection.back() == '\r')) {
-        selection.pop_back();
-    }
-
-    if (selection.empty()) {
-        callback->Cancel();
-        return true;
-    }
-
-    // Find matching command
-    for (size_t i = 0; i < model->GetCount(); i++) {
-        if (model->GetLabelAt(i).ToString() == selection) {
-            callback->Continue(model->GetCommandIdAt(i), EVENTFLAG_NONE);
-            return true;
-        }
-    }
-
-    callback->Cancel();
+    std::cerr << "[ContextMenu] Opening menu with " << items.size() << " items" << std::endl;
+    menu_->open(params->GetXCoord(), params->GetYCoord(), items, callback);
     return true;
 }

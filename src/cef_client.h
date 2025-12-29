@@ -9,6 +9,8 @@
 #include <functional>
 #include <vector>
 
+class MenuOverlay;
+
 // Message callback for player commands from renderer
 using PlayerMessageCallback = std::function<void(const std::string& cmd, const std::string& arg, int intArg)>;
 
@@ -34,7 +36,7 @@ public:
     using AcceleratedPaintCallback = std::function<void(const AcceleratedPaintInfo& info)>;
 
     Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg = nullptr,
-           AcceleratedPaintCallback on_accel_paint = nullptr);
+           AcceleratedPaintCallback on_accel_paint = nullptr, MenuOverlay* menu = nullptr);
 
     // CefClient
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
@@ -105,6 +107,7 @@ private:
     PaintCallback on_paint_;
     PlayerMessageCallback on_player_msg_;
     AcceleratedPaintCallback on_accel_paint_;
+    MenuOverlay* menu_ = nullptr;
     std::atomic<bool> is_closed_ = false;
     CefRefPtr<CefBrowser> browser_;
 

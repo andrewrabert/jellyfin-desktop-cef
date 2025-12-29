@@ -71,6 +71,7 @@ add_executable(jellyfin-desktop
     src/wayland_subsurface.cpp
     src/wayland-protocols/color-management-v1-code.c
     src/settings.cpp
+    src/menu_overlay.cpp
 )
 
 target_include_directories(jellyfin-desktop PRIVATE

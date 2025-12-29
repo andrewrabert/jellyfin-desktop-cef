@@ -22,6 +22,7 @@
 #include "wayland_subsurface.h"
 #include "cef_app.h"
 #include "cef_client.h"
+#include "menu_overlay.h"
 #include "settings.h"
 
 // Fade constants
@@ -208,6 +209,12 @@ int main(int argc, char* argv[]) {
     DmaBufImporter importer;
     importer.compositor = &compositor;
 
+    // Context menu overlay
+    MenuOverlay menu;
+    if (!menu.init()) {
+        std::cerr << "Warning: Failed to init menu overlay (no font found)" << std::endl;
+    }
+
     std::thread import_thread([&importer]() {
         while (true) {
             AcceleratedPaintInfo local_info;
@@ -252,7 +259,8 @@ int main(int argc, char* argv[]) {
             importer.info = info;
             importer.pending = true;
             importer.cv.notify_one();
-        }
+        },
+        &menu
     ));
 
     CefWindowInfo window_info;
@@ -342,7 +350,7 @@ int main(int argc, char* argv[]) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
-            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) running = false;
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !menu.isOpen()) running = false;
 
             if (event.type == SDL_EVENT_MOUSE_MOTION ||
                 event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
@@ -354,6 +362,20 @@ int main(int argc, char* argv[]) {
             }
 
             int mods = sdlModsToCef(SDL_GetModState());
+
+            // Route input to menu overlay if open
+            if (menu.isOpen()) {
+                if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                    menu.handleMouseMove(static_cast<int>(event.motion.x), static_cast<int>(event.motion.y));
+                } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                    menu.handleMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y), true);
+                } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                    menu.handleMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y), false);
+                } else if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
+                    menu.close();
+                }
+                continue;  // Don't forward to CEF while menu is open
+            }
 
             if (event.type == SDL_EVENT_MOUSE_MOTION) {
                 mouse_x = static_cast<int>(event.motion.x);
@@ -368,6 +390,7 @@ int main(int argc, char* argv[]) {
                 int x = static_cast<int>(event.button.x);
                 int y = static_cast<int>(event.button.y);
                 int btn = event.button.button;
+                std::cerr << "[SDL] Button DOWN: " << btn << " at " << x << "," << y << std::endl;
                 Uint64 now_ticks = SDL_GetTicks();
 
                 int dx = x - last_click_x;
@@ -511,12 +534,22 @@ int main(int argc, char* argv[]) {
         }
 
         // Software path if DMA-BUF not available/enabled
-        if (texture_dirty) {
+        // Also update when menu is open or just closed (need to blend/unblend menu overlay)
+        if (texture_dirty || menu.isOpen() || menu.needsRedraw()) {
             std::lock_guard<std::mutex> lock(buffer_mutex);
             if (!paint_buffer_copy.empty()) {
-                compositor.updateOverlay(paint_buffer_copy.data(), paint_width, paint_height);
+                if (menu.isOpen()) {
+                    // Blend menu onto a working copy (don't corrupt original)
+                    static std::vector<uint8_t> blend_buffer;
+                    blend_buffer.assign(paint_buffer_copy.begin(), paint_buffer_copy.end());
+                    menu.blendOnto(blend_buffer.data(), paint_width, paint_height);
+                    compositor.updateOverlay(blend_buffer.data(), paint_width, paint_height);
+                } else {
+                    compositor.updateOverlay(paint_buffer_copy.data(), paint_width, paint_height);
+                }
             }
             texture_dirty = false;
+            menu.clearRedraw();
         }
 
         // Wait for previous frame
