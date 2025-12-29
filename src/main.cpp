@@ -7,6 +7,8 @@
 #include <vector>
 #include <cstring>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
 #include <chrono>
 #include <algorithm>
 
@@ -38,6 +40,9 @@ int sdlModsToCef(SDL_Keymod sdlMods) {
     if (sdlMods & SDL_KMOD_ALT)   cef |= (1 << 3);
     return cef;
 }
+
+static auto _main_start = std::chrono::steady_clock::now();
+inline long _ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - _main_start).count(); }
 
 int main(int argc, char* argv[]) {
     // Parse CLI args
@@ -190,13 +195,34 @@ int main(int argc, char* argv[]) {
     std::mutex cmd_mutex;
     std::vector<PlayerCmd> pending_cmds;
 
-    // DMA-BUF info for accelerated paint
-    struct PendingDmaBuf {
+    // DMA-BUF import thread - non-blocking, processes latest frame
+    struct DmaBufImporter {
+        std::mutex mutex;
+        std::condition_variable cv;
         AcceleratedPaintInfo info;
-        bool ready = false;
+        VulkanCompositor* compositor = nullptr;
+        bool pending = false;
+        bool shutdown = false;
     };
-    std::mutex dmabuf_mutex;
-    PendingDmaBuf pending_dmabuf;
+    DmaBufImporter importer;
+    importer.compositor = &compositor;
+
+    std::thread import_thread([&importer]() {
+        while (true) {
+            AcceleratedPaintInfo local_info;
+            {
+                std::unique_lock<std::mutex> lock(importer.mutex);
+                importer.cv.wait(lock, [&] { return importer.pending || importer.shutdown; });
+                if (importer.shutdown) break;
+
+                // Grab the info and clear pending
+                local_info = std::move(importer.info);
+                importer.pending = false;
+            }
+            // Do the import outside the lock
+            importer.compositor->updateOverlayFromDmaBuf(local_info);
+        }
+    });
 
     CefRefPtr<Client> client(new Client(width, height,
         [&](const void* buffer, int w, int h) {
@@ -214,10 +240,17 @@ int main(int argc, char* argv[]) {
             pending_cmds.push_back({cmd, arg, intArg});
         },
         [&](const AcceleratedPaintInfo& info) {
-            // GPU accelerated paint with DMA-BUF
-            std::lock_guard<std::mutex> lock(dmabuf_mutex);
-            pending_dmabuf.info = info;
-            pending_dmabuf.ready = true;
+            // GPU accelerated paint - queue and return immediately (non-blocking)
+            std::lock_guard<std::mutex> lock(importer.mutex);
+            // If previous frame not yet processed, close its fd
+            if (importer.pending && !importer.info.planes.empty()) {
+                for (auto& plane : importer.info.planes) {
+                    if (plane.fd >= 0) close(plane.fd);
+                }
+            }
+            importer.info = info;
+            importer.pending = true;
+            importer.cv.notify_one();
         }
     ));
 
@@ -376,7 +409,7 @@ int main(int argc, char* argv[]) {
                     subsurface.recreateSwapchain(current_width, current_height);
                 }
                 auto t5 = std::chrono::steady_clock::now();
-                std::cerr << "main resize: wait=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1-resize_start).count()
+                std::cerr << "[" << _ms() << "ms] main resize: wait=" << std::chrono::duration_cast<std::chrono::milliseconds>(t1-resize_start).count()
                           << "ms swap=" << std::chrono::duration_cast<std::chrono::milliseconds>(t2-t1).count()
                           << "ms comp=" << std::chrono::duration_cast<std::chrono::milliseconds>(t3-t2).count()
                           << "ms cef=" << std::chrono::duration_cast<std::chrono::milliseconds>(t4-t3).count()
@@ -471,20 +504,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Update overlay texture - prefer DMA-BUF (GPU) over software path
-        {
-            std::lock_guard<std::mutex> lock(dmabuf_mutex);
-            if (pending_dmabuf.ready) {
-                compositor.updateOverlayFromDmaBuf(pending_dmabuf.info);
-                pending_dmabuf.ready = false;
-            }
-        }
         // Software path if DMA-BUF not available/enabled
         if (texture_dirty) {
             std::lock_guard<std::mutex> lock(buffer_mutex);
             if (!paint_buffer_copy.empty()) {
                 compositor.updateOverlay(paint_buffer_copy.data(), paint_width, paint_height);
-                compositor.setSoftwareContentReady();
             }
             texture_dirty = false;
         }
@@ -605,6 +629,14 @@ int main(int argc, char* argv[]) {
             compositor.resize(current_width, current_height);
         }
     }
+
+    // Shutdown import thread
+    {
+        std::lock_guard<std::mutex> lock(importer.mutex);
+        importer.shutdown = true;
+    }
+    importer.cv.notify_one();
+    import_thread.join();
 
     // Cleanup - order matters: wait for GPU, destroy resources, then window
     vkDeviceWaitIdle(vk.device());

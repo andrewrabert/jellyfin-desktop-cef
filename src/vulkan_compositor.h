@@ -2,6 +2,8 @@
 
 #include "vulkan_context.h"
 #include "cef_client.h"  // For AcceleratedPaintInfo
+#include <mutex>
+#include <chrono>
 
 class VulkanCompositor {
 public:
@@ -15,6 +17,7 @@ public:
     void updateOverlay(const void* data, int width, int height);
 
     // Update overlay from DMA-BUF - hardware accelerated path
+    // Copies to local buffer and releases DMA-BUF immediately
     bool updateOverlayFromDmaBuf(const AcceleratedPaintInfo& info);
 
     // Composite overlay onto swapchain image
@@ -22,53 +25,42 @@ public:
     void composite(VkCommandBuffer cmd, VkImage target, VkImageView targetView,
                    uint32_t width, uint32_t height, float alpha);
 
-    // Resize resources
+    // Resize resources immediately (we own the local buffer)
     void resize(uint32_t width, uint32_t height);
 
     // Check if we have valid content to composite
-    bool hasValidOverlay() const { return using_dmabuf_ || has_software_content_; }
-
-    // Mark that we have software content
-    void setSoftwareContentReady() { has_software_content_ = true; }
+    bool hasValidOverlay() const { return has_content_; }
 
 private:
-    bool createOverlayResources();
+    bool createLocalImage();
     bool createPipeline();
     bool createDescriptorSets();
-    void destroyOverlayResources();
-    void destroyDmaBufImage();
+    void destroyLocalImage();
 
     VulkanContext* vk_ = nullptr;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
 
-    // Overlay texture (software path)
-    VkImage overlay_image_ = VK_NULL_HANDLE;
-    VkDeviceMemory overlay_memory_ = VK_NULL_HANDLE;
-    VkImageView overlay_view_ = VK_NULL_HANDLE;
+    // Local image we own and sample from (both software and DMA-BUF paths copy here)
+    VkImage local_image_ = VK_NULL_HANDLE;
+    VkDeviceMemory local_memory_ = VK_NULL_HANDLE;
+    VkImageView local_view_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
+    bool has_content_ = false;
 
-    // DMA-BUF imported texture (hardware path)
-    // Use more slots than CEF's buffer pool to avoid needing to destroy during normal operation
-    static constexpr int DMABUF_BUFFER_COUNT = 6;
-    struct DmaBufResource {
-        VkImage image = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        VkImageView view = VK_NULL_HANDLE;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint64_t buffer_id = 0;  // Identifies the underlying DMA-BUF (dev << 32 | ino)
-    };
-    DmaBufResource dmabuf_[DMABUF_BUFFER_COUNT];
-    int dmabuf_current_ = 0;
-    bool using_dmabuf_ = false;
-    bool dmabuf_supported_ = true;  // Set false if import fails
-    bool has_software_content_ = false;
-
-    // Staging buffer for texture upload
+    // Staging buffer for software texture upload
     VkBuffer staging_buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory staging_memory_ = VK_NULL_HANDLE;
     void* staging_mapped_ = nullptr;
+
+    // DMA-BUF support
+    bool dmabuf_supported_ = true;  // Set false if import fails
+
+    // Thread safety - CEF paint callbacks come from different thread
+    std::mutex mutex_;
+
+    // Skip DMA-BUF imports briefly after resize (implicit sync causes hangs)
+    std::chrono::steady_clock::time_point last_resize_time_;
 
     // Render pass and pipeline for compositing
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
@@ -79,9 +71,6 @@ private:
     VkDescriptorSetLayout descriptor_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_set_ = VK_NULL_HANDLE;
-
-    // Per-frame resources
-    VkFramebuffer framebuffer_ = VK_NULL_HANDLE;
 
     // Push constants
     struct PushConstants {

@@ -339,14 +339,20 @@ VkCommandBuffer VulkanContext::beginSingleTimeCommands() {
 void VulkanContext::endSingleTimeCommands(VkCommandBuffer cmd) {
     vkEndCommandBuffer(cmd);
 
+    VkFenceCreateInfo fence_info{};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence;
+    vkCreateFence(device_, &fence_info, nullptr, &fence);
+
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &cmd;
 
-    vkQueueSubmit(queue_, 1, &submit_info, VK_NULL_HANDLE);
-    vkQueueWaitIdle(queue_);
+    vkQueueSubmit(queue_, 1, &submit_info, fence);
+    vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);
 
+    vkDestroyFence(device_, fence, nullptr);
     vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
 }
 

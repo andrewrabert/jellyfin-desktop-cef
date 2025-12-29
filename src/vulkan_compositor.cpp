@@ -3,15 +3,13 @@
 #include <cstring>
 #include <vector>
 #include <unistd.h>  // For close()
-#include <sys/stat.h>  // For fstat()
 
-// DRM format definitions
-#ifndef DRM_FORMAT_ARGB8888
-#define DRM_FORMAT_ARGB8888 0x34325241
-#endif
-#ifndef DRM_FORMAT_XRGB8888
-#define DRM_FORMAT_XRGB8888 0x34325258
-#endif
+#include <chrono>
+static auto _log_start = std::chrono::steady_clock::now();
+#define COMP_LOG(msg) do { \
+    auto _now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - _log_start).count(); \
+    std::cerr << "[" << _now << "ms] [Compositor] " << msg << std::endl; std::cerr.flush(); \
+} while(0)
 
 // Embedded SPIR-V shaders (compiled from GLSL)
 static const unsigned char vert_spv[] = {
@@ -208,17 +206,18 @@ bool VulkanCompositor::init(VulkanContext* vk, uint32_t width, uint32_t height) 
     width_ = width;
     height_ = height;
 
-    if (!createOverlayResources()) return false;
+    if (!createLocalImage()) return false;
     if (!createPipeline()) return false;
     if (!createDescriptorSets()) return false;
 
     return true;
 }
 
-bool VulkanCompositor::createOverlayResources() {
+bool VulkanCompositor::createLocalImage() {
     VkDevice device = vk_->device();
 
-    // Create overlay image
+    // Create local image - used for both software and DMA-BUF paths
+    // TRANSFER_DST for receiving copies from staging buffer or DMA-BUF
     VkImageCreateInfo image_info{};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
@@ -232,35 +231,35 @@ bool VulkanCompositor::createOverlayResources() {
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    if (vkCreateImage(device, &image_info, nullptr, &overlay_image_) != VK_SUCCESS) {
-        std::cerr << "Failed to create overlay image" << std::endl;
+    if (vkCreateImage(device, &image_info, nullptr, &local_image_) != VK_SUCCESS) {
+        std::cerr << "Failed to create local image" << std::endl;
         return false;
     }
 
     VkMemoryRequirements mem_reqs;
-    vkGetImageMemoryRequirements(device, overlay_image_, &mem_reqs);
+    vkGetImageMemoryRequirements(device, local_image_, &mem_reqs);
 
     VkMemoryAllocateInfo alloc_info{};
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc_info.allocationSize = mem_reqs.size;
     alloc_info.memoryTypeIndex = vk_->findMemoryType(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    if (vkAllocateMemory(device, &alloc_info, nullptr, &overlay_memory_) != VK_SUCCESS) {
-        std::cerr << "Failed to allocate overlay image memory" << std::endl;
+    if (vkAllocateMemory(device, &alloc_info, nullptr, &local_memory_) != VK_SUCCESS) {
+        std::cerr << "Failed to allocate local image memory" << std::endl;
         return false;
     }
-    vkBindImageMemory(device, overlay_image_, overlay_memory_, 0);
+    vkBindImageMemory(device, local_image_, local_memory_, 0);
 
     // Create image view
     VkImageViewCreateInfo view_info{};
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    view_info.image = overlay_image_;
+    view_info.image = local_image_;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     view_info.format = VK_FORMAT_B8G8R8A8_UNORM;
     view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    if (vkCreateImageView(device, &view_info, nullptr, &overlay_view_) != VK_SUCCESS) {
-        std::cerr << "Failed to create overlay image view" << std::endl;
+    if (vkCreateImageView(device, &view_info, nullptr, &local_view_) != VK_SUCCESS) {
+        std::cerr << "Failed to create local image view" << std::endl;
         return false;
     }
 
@@ -278,7 +277,7 @@ bool VulkanCompositor::createOverlayResources() {
         return false;
     }
 
-    // Create staging buffer
+    // Create staging buffer for software path
     VkDeviceSize buffer_size = width_ * height_ * 4;
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -304,7 +303,7 @@ bool VulkanCompositor::createOverlayResources() {
     vkBindBufferMemory(device, staging_buffer_, staging_memory_, 0);
     vkMapMemory(device, staging_memory_, 0, buffer_size, 0, &staging_mapped_);
 
-    // Transition overlay image to shader read layout
+    // Transition local image to shader read layout
     VkCommandBuffer cmd = vk_->beginSingleTimeCommands();
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -312,7 +311,7 @@ bool VulkanCompositor::createOverlayResources() {
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = overlay_image_;
+    barrier.image = local_image_;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -547,10 +546,10 @@ bool VulkanCompositor::createDescriptorSets() {
         return false;
     }
 
-    // Update descriptor set
+    // Update descriptor set to point to local image
     VkDescriptorImageInfo image_info{};
     image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    image_info.imageView = overlay_view_;
+    image_info.imageView = local_view_;
     image_info.sampler = sampler_;
 
     VkWriteDescriptorSet write{};
@@ -568,14 +567,20 @@ bool VulkanCompositor::createDescriptorSets() {
 }
 
 void VulkanCompositor::updateOverlay(const void* data, int width, int height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Skip if size doesn't match - CEF hasn't caught up yet
     if (!staging_mapped_ || width != static_cast<int>(width_) || height != static_cast<int>(height_)) {
+        COMP_LOG("updateOverlay: " << width << "x" << height << " (want: " << width_ << "x" << height_ << ") - skipping");
         return;
     }
+    COMP_LOG("updateOverlay: " << width << "x" << height);
 
     // Copy data to staging buffer
     std::memcpy(staging_mapped_, data, width * height * 4);
 
-    // Transfer to GPU image
+    // Transfer to local image
+    COMP_LOG("updateOverlay: beginning GPU transfer");
     VkCommandBuffer cmd = vk_->beginSingleTimeCommands();
 
     // Transition to transfer dst
@@ -585,7 +590,7 @@ void VulkanCompositor::updateOverlay(const void* data, int width, int height) {
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = overlay_image_;
+    barrier.image = local_image_;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -602,7 +607,7 @@ void VulkanCompositor::updateOverlay(const void* data, int width, int height) {
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {width_, height_, 1};
 
-    vkCmdCopyBufferToImage(cmd, staging_buffer_, overlay_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmd, staging_buffer_, local_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // Transition back to shader read
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -613,28 +618,226 @@ void VulkanCompositor::updateOverlay(const void* data, int width, int height) {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
 
+    COMP_LOG("updateOverlay: submitting GPU transfer");
     vk_->endSingleTimeCommands(cmd);
+    COMP_LOG("updateOverlay: done");
+    has_content_ = true;
+}
+
+bool VulkanCompositor::updateOverlayFromDmaBuf(const AcceleratedPaintInfo& info) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (info.planes.empty() || info.planes[0].fd < 0) {
+        return false;
+    }
+
+    // Skip DMA-BUF imports briefly after resize to avoid implicit sync hangs
+    auto since_resize = std::chrono::steady_clock::now() - last_resize_time_;
+    if (since_resize < std::chrono::milliseconds(150)) {
+        COMP_LOG("updateOverlayFromDmaBuf: skipping (resize cooldown)");
+        close(info.planes[0].fd);
+        return false;
+    }
+
+    // Skip if size doesn't match - CEF hasn't caught up yet
+    if (static_cast<uint32_t>(info.width) != width_ || static_cast<uint32_t>(info.height) != height_) {
+        COMP_LOG("updateOverlayFromDmaBuf: " << info.width << "x" << info.height << " (want: " << width_ << "x" << height_ << ") - skipping");
+        close(info.planes[0].fd);
+        return false;
+    }
+
+    // Skip if we already know DMA-BUF doesn't work
+    if (!dmabuf_supported_) {
+        COMP_LOG("updateOverlayFromDmaBuf: dmabuf not supported");
+        close(info.planes[0].fd);
+        return false;
+    }
+
+    COMP_LOG("updateOverlayFromDmaBuf: " << info.width << "x" << info.height);
+
+    VkDevice device = vk_->device();
+
+    // Import DMA-BUF as temporary image
+    VkExternalMemoryImageCreateInfo ext_info{};
+    ext_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    ext_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    VkImageDrmFormatModifierExplicitCreateInfoEXT drm_info{};
+    drm_info.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+    drm_info.drmFormatModifier = info.modifier;
+
+    // Query DMA-BUF size via lseek
+    off_t dmabuf_size = lseek(info.planes[0].fd, 0, SEEK_END);
+    if (dmabuf_size > 0) {
+        lseek(info.planes[0].fd, 0, SEEK_SET);
+    } else {
+        dmabuf_size = 0;
+    }
+
+    VkSubresourceLayout plane_layout{};
+    plane_layout.offset = info.planes[0].offset;
+    plane_layout.rowPitch = info.planes[0].stride;
+    plane_layout.size = static_cast<VkDeviceSize>(dmabuf_size);
+    plane_layout.depthPitch = 0;
+    plane_layout.arrayPitch = 0;
+    drm_info.drmFormatModifierPlaneCount = 1;
+    drm_info.pPlaneLayouts = &plane_layout;
+
+    ext_info.pNext = &drm_info;
+
+    VkImageCreateInfo image_info{};
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.pNext = &ext_info;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = VK_FORMAT_B8G8R8A8_UNORM;
+    image_info.extent = {static_cast<uint32_t>(info.width), static_cast<uint32_t>(info.height), 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    image_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // Only need to copy from it
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage temp_image = VK_NULL_HANDLE;
+    VkDeviceMemory temp_memory = VK_NULL_HANDLE;
+
+    VkResult result = vkCreateImage(device, &image_info, nullptr, &temp_image);
+    if (result != VK_SUCCESS) {
+        std::cerr << "DMA-BUF: vkCreateImage failed: " << result << std::endl;
+        dmabuf_supported_ = false;
+        close(info.planes[0].fd);
+        return false;
+    }
+
+    // Get memory fd properties
+    VkMemoryFdPropertiesKHR fd_props{};
+    fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+
+    auto vkGetMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
+        vkGetDeviceProcAddr(device, "vkGetMemoryFdPropertiesKHR");
+
+    if (!vkGetMemoryFdPropertiesKHR ||
+        vkGetMemoryFdPropertiesKHR(device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+                                    info.planes[0].fd, &fd_props) != VK_SUCCESS) {
+        std::cerr << "DMA-BUF: vkGetMemoryFdPropertiesKHR failed" << std::endl;
+        dmabuf_supported_ = false;
+        close(info.planes[0].fd);
+        vkDestroyImage(device, temp_image, nullptr);
+        return false;
+    }
+
+    VkMemoryRequirements mem_reqs;
+    vkGetImageMemoryRequirements(device, temp_image, &mem_reqs);
+
+    uint32_t mem_type_bits = mem_reqs.memoryTypeBits & fd_props.memoryTypeBits;
+    if (mem_type_bits == 0) {
+        std::cerr << "DMA-BUF: no compatible memory type" << std::endl;
+        dmabuf_supported_ = false;
+        close(info.planes[0].fd);
+        vkDestroyImage(device, temp_image, nullptr);
+        return false;
+    }
+
+    VkImportMemoryFdInfoKHR import_info{};
+    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    import_info.fd = info.planes[0].fd;  // Ownership transfers to Vulkan
+
+    VkMemoryDedicatedAllocateInfo dedicated_info{};
+    dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicated_info.pNext = &import_info;
+    dedicated_info.image = temp_image;
+
+    VkMemoryAllocateInfo alloc_info{};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.pNext = &dedicated_info;
+    alloc_info.allocationSize = mem_reqs.size;
+    alloc_info.memoryTypeIndex = vk_->findMemoryType(mem_type_bits, 0);
+
+    result = vkAllocateMemory(device, &alloc_info, nullptr, &temp_memory);
+    if (result != VK_SUCCESS) {
+        std::cerr << "DMA-BUF: vkAllocateMemory failed: " << result << std::endl;
+        dmabuf_supported_ = false;
+        // fd ownership transferred, don't close
+        vkDestroyImage(device, temp_image, nullptr);
+        return false;
+    }
+
+    result = vkBindImageMemory(device, temp_image, temp_memory, 0);
+    if (result != VK_SUCCESS) {
+        std::cerr << "DMA-BUF: vkBindImageMemory failed: " << result << std::endl;
+        dmabuf_supported_ = false;
+        vkFreeMemory(device, temp_memory, nullptr);
+        vkDestroyImage(device, temp_image, nullptr);
+        return false;
+    }
+
+    // Copy from DMA-BUF image to our local image
+    COMP_LOG("updateOverlayFromDmaBuf: beginning GPU copy");
+    VkCommandBuffer cmd = vk_->beginSingleTimeCommands();
+
+    // Transition temp image to transfer src
+    VkImageMemoryBarrier barriers[2] = {};
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].image = temp_image;
+    barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barriers[0].srcAccessMask = 0;
+    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+    // Transition local image to transfer dst
+    barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[1].image = local_image_;
+    barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 2, barriers);
+
+    // Copy image to image
+    VkImageCopy copy_region{};
+    copy_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy_region.srcOffset = {0, 0, 0};
+    copy_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy_region.dstOffset = {0, 0, 0};
+    copy_region.extent = {width_, height_, 1};
+
+    vkCmdCopyImage(cmd, temp_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   local_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+    // Transition local image back to shader read
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barriers[0].image = local_image_;
+    barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, barriers);
+
+    COMP_LOG("updateOverlayFromDmaBuf: submitting GPU copy");
+    vk_->endSingleTimeCommands(cmd);
+    COMP_LOG("updateOverlayFromDmaBuf: GPU copy done, cleaning up");
+    vkDestroyImage(device, temp_image, nullptr);
+    vkFreeMemory(device, temp_memory, nullptr);
+    COMP_LOG("updateOverlayFromDmaBuf: done");
+
+    has_content_ = true;
+    return true;
 }
 
 void VulkanCompositor::composite(VkCommandBuffer cmd, VkImage target, VkImageView targetView,
                                   uint32_t width, uint32_t height, float alpha) {
-    // Memory barrier to ensure DMA-BUF content is visible before sampling
-    if (using_dmabuf_ && dmabuf_[dmabuf_current_].image) {
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = dmabuf_[dmabuf_current_].image;
-        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;  // External writes (CEF)
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &barrier);
-    }
-
     // Create temporary framebuffer for this target
     VkFramebufferCreateInfo fb_info{};
     fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -682,54 +885,46 @@ void VulkanCompositor::composite(VkCommandBuffer cmd, VkImage target, VkImageVie
 
     vkCmdEndRenderPass(cmd);
 
-    // Cleanup framebuffer after command buffer is submitted (need to defer this)
-    // For now, we'll destroy it immediately which is not ideal but works
-    // In production, this should be deferred until after the command buffer completes
     vkDestroyFramebuffer(vk_->device(), framebuffer, nullptr);
 }
 
 void VulkanCompositor::resize(uint32_t width, uint32_t height) {
-    if (width == width_ && height == height_) return;
+    COMP_LOG("resize: " << width << "x" << height << " (current: " << width_ << "x" << height_ << ")");
 
-    vkDeviceWaitIdle(vk_->device());
+    if (width == width_ && height == height_) {
+        COMP_LOG("resize: same size, ignoring");
+        return;
+    }
 
-    // Destroy all resources
-    destroyDmaBufImage();
-    destroyOverlayResources();
+    COMP_LOG("resize: acquiring lock");
+    std::lock_guard<std::mutex> lock(mutex_);
+    COMP_LOG("resize: lock acquired, destroying old resources");
+    // No vkDeviceWaitIdle - caller (main.cpp) already waited
 
-    // Destroy pipeline resources (swapchain format might have changed)
+    // Mark resize time - skip DMA-BUF imports briefly to avoid implicit sync hangs
+    last_resize_time_ = std::chrono::steady_clock::now();
+
+    // Destroy old resources
+    destroyLocalImage();
+
     VkDevice device = vk_->device();
-    if (pipeline_) {
-        vkDestroyPipeline(device, pipeline_, nullptr);
-        pipeline_ = VK_NULL_HANDLE;
-    }
-    if (pipeline_layout_) {
-        vkDestroyPipelineLayout(device, pipeline_layout_, nullptr);
-        pipeline_layout_ = VK_NULL_HANDLE;
-    }
     if (descriptor_pool_) {
         vkDestroyDescriptorPool(device, descriptor_pool_, nullptr);
         descriptor_pool_ = VK_NULL_HANDLE;
     }
-    if (descriptor_layout_) {
-        vkDestroyDescriptorSetLayout(device, descriptor_layout_, nullptr);
-        descriptor_layout_ = VK_NULL_HANDLE;
-    }
-    if (render_pass_) {
-        vkDestroyRenderPass(device, render_pass_, nullptr);
-        render_pass_ = VK_NULL_HANDLE;
-    }
 
     width_ = width;
     height_ = height;
+    has_content_ = false;  // No content until CEF repaints
 
-    // Recreate everything
-    createOverlayResources();
-    createPipeline();
+    COMP_LOG("resize: recreating local image");
+    createLocalImage();
+    COMP_LOG("resize: recreating descriptor sets");
     createDescriptorSets();
+    COMP_LOG("resize: done");
 }
 
-void VulkanCompositor::destroyOverlayResources() {
+void VulkanCompositor::destroyLocalImage() {
     VkDevice device = vk_->device();
 
     if (staging_mapped_) {
@@ -748,264 +943,18 @@ void VulkanCompositor::destroyOverlayResources() {
         vkDestroySampler(device, sampler_, nullptr);
         sampler_ = VK_NULL_HANDLE;
     }
-    if (overlay_view_) {
-        vkDestroyImageView(device, overlay_view_, nullptr);
-        overlay_view_ = VK_NULL_HANDLE;
+    if (local_view_) {
+        vkDestroyImageView(device, local_view_, nullptr);
+        local_view_ = VK_NULL_HANDLE;
     }
-    if (overlay_image_) {
-        vkDestroyImage(device, overlay_image_, nullptr);
-        overlay_image_ = VK_NULL_HANDLE;
+    if (local_image_) {
+        vkDestroyImage(device, local_image_, nullptr);
+        local_image_ = VK_NULL_HANDLE;
     }
-    if (overlay_memory_) {
-        vkFreeMemory(device, overlay_memory_, nullptr);
-        overlay_memory_ = VK_NULL_HANDLE;
+    if (local_memory_) {
+        vkFreeMemory(device, local_memory_, nullptr);
+        local_memory_ = VK_NULL_HANDLE;
     }
-}
-
-void VulkanCompositor::destroyDmaBufImage() {
-    VkDevice device = vk_->device();
-    for (int i = 0; i < DMABUF_BUFFER_COUNT; i++) {
-        auto& buf = dmabuf_[i];
-        if (buf.view) {
-            vkDestroyImageView(device, buf.view, nullptr);
-            buf.view = VK_NULL_HANDLE;
-        }
-        if (buf.image) {
-            vkDestroyImage(device, buf.image, nullptr);
-            buf.image = VK_NULL_HANDLE;
-        }
-        if (buf.memory) {
-            vkFreeMemory(device, buf.memory, nullptr);
-            buf.memory = VK_NULL_HANDLE;
-        }
-        buf.width = 0;
-        buf.height = 0;
-        buf.buffer_id = 0;
-    }
-    dmabuf_current_ = 0;
-    using_dmabuf_ = false;
-    has_software_content_ = false;
-}
-
-bool VulkanCompositor::updateOverlayFromDmaBuf(const AcceleratedPaintInfo& info) {
-    if (info.planes.empty() || info.planes[0].fd < 0) {
-        return false;
-    }
-
-    // Skip if we already know DMA-BUF doesn't work
-    if (!dmabuf_supported_) {
-        close(info.planes[0].fd);
-        return false;
-    }
-
-    VkDevice device = vk_->device();
-
-    // Get unique identifier for this DMA-BUF using fstat
-    struct stat st;
-    if (fstat(info.planes[0].fd, &st) != 0) {
-        close(info.planes[0].fd);
-        return false;
-    }
-    uint64_t buffer_id = (static_cast<uint64_t>(st.st_dev) << 32) | st.st_ino;
-
-    // Check if we already have this buffer imported in any slot
-    for (int i = 0; i < DMABUF_BUFFER_COUNT; i++) {
-        if (dmabuf_[i].buffer_id == buffer_id && dmabuf_[i].image) {
-            // Found existing import - reuse it
-            close(info.planes[0].fd);
-            dmabuf_current_ = i;
-            using_dmabuf_ = true;
-
-            // Update descriptor to point to this buffer
-            VkDescriptorImageInfo img_info{};
-            img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            img_info.imageView = dmabuf_[i].view;
-            img_info.sampler = sampler_;
-
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptor_set_;
-            write.dstBinding = 0;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.descriptorCount = 1;
-            write.pImageInfo = &img_info;
-
-            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-            return true;
-        }
-    }
-
-    // New buffer - find an empty slot
-    int next = -1;
-    for (int i = 0; i < DMABUF_BUFFER_COUNT; i++) {
-        if (!dmabuf_[i].image) {
-            next = i;
-            break;
-        }
-    }
-    if (next < 0) {
-        // All slots full - skip frame rather than risk GPU hang
-        close(info.planes[0].fd);
-        return using_dmabuf_;
-    }
-    auto& buf = dmabuf_[next];
-
-    // Create and import new DMA-BUF image
-    VkExternalMemoryImageCreateInfo ext_info{};
-    ext_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-    ext_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-
-    VkImageDrmFormatModifierExplicitCreateInfoEXT drm_info{};
-    drm_info.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
-    drm_info.drmFormatModifier = info.modifier;
-
-    VkSubresourceLayout plane_layout{};
-    plane_layout.offset = info.planes[0].offset;
-    plane_layout.rowPitch = info.planes[0].stride;
-    plane_layout.size = 0;
-    plane_layout.depthPitch = 0;
-    plane_layout.arrayPitch = 0;
-    drm_info.drmFormatModifierPlaneCount = 1;
-    drm_info.pPlaneLayouts = &plane_layout;
-
-    ext_info.pNext = &drm_info;
-
-    VkImageCreateInfo image_info{};
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_info.pNext = &ext_info;
-    image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = VK_FORMAT_B8G8R8A8_UNORM;
-    image_info.extent = {static_cast<uint32_t>(info.width),
-                        static_cast<uint32_t>(info.height), 1};
-    image_info.mipLevels = 1;
-    image_info.arrayLayers = 1;
-    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
-    image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VkResult result = vkCreateImage(device, &image_info, nullptr, &buf.image);
-    if (result != VK_SUCCESS) {
-        std::cerr << "DMA-BUF: vkCreateImage failed: " << result << std::endl;
-        dmabuf_supported_ = false;
-        close(info.planes[0].fd);
-        return false;
-    }
-
-    // Get memory fd properties
-    VkMemoryFdPropertiesKHR fd_props{};
-    fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
-
-    auto vkGetMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
-        vkGetDeviceProcAddr(device, "vkGetMemoryFdPropertiesKHR");
-
-    if (!vkGetMemoryFdPropertiesKHR ||
-        vkGetMemoryFdPropertiesKHR(device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-                                    info.planes[0].fd, &fd_props) != VK_SUCCESS) {
-        std::cerr << "DMA-BUF: vkGetMemoryFdPropertiesKHR failed" << std::endl;
-        dmabuf_supported_ = false;
-        close(info.planes[0].fd);
-        vkDestroyImage(device, buf.image, nullptr);
-        buf.image = VK_NULL_HANDLE;
-        return false;
-    }
-
-    VkMemoryRequirements mem_reqs;
-    vkGetImageMemoryRequirements(device, buf.image, &mem_reqs);
-
-    uint32_t mem_type_bits = mem_reqs.memoryTypeBits & fd_props.memoryTypeBits;
-    if (mem_type_bits == 0) {
-        std::cerr << "DMA-BUF: no compatible memory type" << std::endl;
-        dmabuf_supported_ = false;
-        close(info.planes[0].fd);
-        vkDestroyImage(device, buf.image, nullptr);
-        buf.image = VK_NULL_HANDLE;
-        return false;
-    }
-
-    VkImportMemoryFdInfoKHR import_info{};
-    import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
-    import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-    import_info.fd = info.planes[0].fd;
-
-    VkMemoryDedicatedAllocateInfo dedicated_info{};
-    dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-    dedicated_info.pNext = &import_info;
-    dedicated_info.image = buf.image;
-
-    VkMemoryAllocateInfo alloc_info{};
-    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    alloc_info.pNext = &dedicated_info;
-    alloc_info.allocationSize = mem_reqs.size;
-    alloc_info.memoryTypeIndex = vk_->findMemoryType(mem_type_bits, 0);
-
-    result = vkAllocateMemory(device, &alloc_info, nullptr, &buf.memory);
-    if (result != VK_SUCCESS) {
-        std::cerr << "DMA-BUF: vkAllocateMemory failed: " << result << std::endl;
-        dmabuf_supported_ = false;
-        close(info.planes[0].fd);
-        vkDestroyImage(device, buf.image, nullptr);
-        buf.image = VK_NULL_HANDLE;
-        return false;
-    }
-
-    result = vkBindImageMemory(device, buf.image, buf.memory, 0);
-    if (result != VK_SUCCESS) {
-        std::cerr << "DMA-BUF: vkBindImageMemory failed: " << result << std::endl;
-        dmabuf_supported_ = false;
-        vkFreeMemory(device, buf.memory, nullptr);
-        buf.memory = VK_NULL_HANDLE;
-        vkDestroyImage(device, buf.image, nullptr);
-        buf.image = VK_NULL_HANDLE;
-        return false;
-    }
-
-    // Note: For DMA-BUF imports with DRM modifiers, explicit layout transition
-    // is not needed - the image can be used directly in UNDEFINED layout with
-    // VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT. The driver handles it.
-
-    // Create image view
-    VkImageViewCreateInfo view_info{};
-    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    view_info.image = buf.image;
-    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_info.format = VK_FORMAT_B8G8R8A8_UNORM;
-    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    if (vkCreateImageView(device, &view_info, nullptr, &buf.view) != VK_SUCCESS) {
-        std::cerr << "DMA-BUF: vkCreateImageView failed" << std::endl;
-        dmabuf_supported_ = false;
-        vkFreeMemory(device, buf.memory, nullptr);
-        buf.memory = VK_NULL_HANDLE;
-        vkDestroyImage(device, buf.image, nullptr);
-        buf.image = VK_NULL_HANDLE;
-        return false;
-    }
-
-    buf.width = info.width;
-    buf.height = info.height;
-    buf.buffer_id = buffer_id;
-    dmabuf_current_ = next;
-
-    // Update descriptor set
-    VkDescriptorImageInfo img_info{};
-    img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    img_info.imageView = buf.view;
-    img_info.sampler = sampler_;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptor_set_;
-    write.dstBinding = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &img_info;
-
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-
-    using_dmabuf_ = true;
-    return true;
 }
 
 void VulkanCompositor::cleanup() {
@@ -1018,8 +967,7 @@ void VulkanCompositor::cleanup() {
 
     vkDeviceWaitIdle(device);
 
-    destroyDmaBufImage();
-    destroyOverlayResources();
+    destroyLocalImage();
 
     if (pipeline_) {
         vkDestroyPipeline(device, pipeline_, nullptr);
