@@ -342,7 +342,7 @@ int main(int argc, char* argv[]) {
                 bool down = (event.type == SDL_EVENT_KEY_DOWN);
                 SDL_Keycode key = event.key.key;
                 bool is_control_key = (key == SDLK_BACKSPACE || key == SDLK_DELETE ||
-                    key == SDLK_RETURN || key == SDLK_ESCAPE ||
+                    key == SDLK_RETURN || key == SDLK_ESCAPE || key == SDLK_SPACE ||
                     key == SDLK_TAB || key == SDLK_LEFT || key == SDLK_RIGHT ||
                     key == SDLK_UP || key == SDLK_DOWN || key == SDLK_HOME ||
                     key == SDLK_END || key == SDLK_PAGEUP || key == SDLK_PAGEDOWN ||
