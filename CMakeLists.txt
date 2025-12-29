@@ -24,8 +24,8 @@ set(CEF_ROOT "${CMAKE_SOURCE_DIR}/third_party/cef" CACHE PATH "CEF binary distri
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 find_package(CEF REQUIRED)
 
-# SDL2
-find_package(SDL2 REQUIRED)
+# SDL3
+find_package(SDL3 REQUIRED)
 
 # Vulkan
 find_package(Vulkan REQUIRED)
@@ -75,7 +75,6 @@ add_executable(jellyfin-desktop
 
 target_include_directories(jellyfin-desktop PRIVATE
     ${CEF_INCLUDE_DIRS}
-    ${SDL2_INCLUDE_DIRS}
     ${MPV_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
     ${WAYLAND_INCLUDE_DIRS}
@@ -84,7 +83,7 @@ target_include_directories(jellyfin-desktop PRIVATE
 
 target_link_libraries(jellyfin-desktop PRIVATE
     ${CEF_LIBRARIES}
-    ${SDL2_LIBRARIES}
+    SDL3::SDL3
     ${MPV_LIBRARIES}
     ${WAYLAND_LIBRARIES}
     Vulkan::Vulkan

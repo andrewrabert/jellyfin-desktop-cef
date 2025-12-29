@@ -1,5 +1,6 @@
 #include "vulkan_context.h"
-#include <SDL2/SDL_vulkan.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 #include <iostream>
 #include <algorithm>
 
@@ -9,6 +10,13 @@ const char* VulkanContext::device_extensions_[] = {
     VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
     VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
     VK_EXT_HDR_METADATA_EXTENSION_NAME,
+    VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+    VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+    VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
+    VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
+    VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+    VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+    VK_KHR_MAINTENANCE_1_EXTENSION_NAME,
 };
 
 const int VulkanContext::device_extension_count_ = sizeof(device_extensions_) / sizeof(device_extensions_[0]);
@@ -29,11 +37,10 @@ bool VulkanContext::init(SDL_Window* window) {
 }
 
 bool VulkanContext::createInstance(SDL_Window* window) {
-    // Get required extensions from SDL
-    unsigned int ext_count = 0;
-    SDL_Vulkan_GetInstanceExtensions(window, &ext_count, nullptr);
-    std::vector<const char*> extensions(ext_count);
-    SDL_Vulkan_GetInstanceExtensions(window, &ext_count, extensions.data());
+    // Get required extensions from SDL3
+    Uint32 ext_count = 0;
+    const char* const* sdl_exts = SDL_Vulkan_GetInstanceExtensions(&ext_count);
+    std::vector<const char*> extensions(sdl_exts, sdl_exts + ext_count);
 
     // Add HDR colorspace extension
     extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
@@ -61,7 +68,7 @@ bool VulkanContext::createInstance(SDL_Window* window) {
 }
 
 bool VulkanContext::createSurface(SDL_Window* window) {
-    if (!SDL_Vulkan_CreateSurface(window, instance_, &surface_)) {
+    if (!SDL_Vulkan_CreateSurface(window, instance_, nullptr, &surface_)) {
         std::cerr << "Failed to create Vulkan surface: " << SDL_GetError() << std::endl;
         return false;
     }
@@ -123,6 +130,9 @@ bool VulkanContext::createDevice() {
     features2_ = {};
     features2_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2_.pNext = &vk12_features_;
+    // Required by libplacebo
+    features2_.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    features2_.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
     VkDeviceCreateInfo device_info{};
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -157,11 +167,16 @@ bool VulkanContext::createCommandPool() {
 }
 
 bool VulkanContext::createSwapchain(int width, int height) {
+    std::cout << "VulkanContext::createSwapchain called" << std::endl;
     VkSurfaceCapabilitiesKHR caps;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &caps);
+    VkResult caps_result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &caps);
+    if (caps_result != VK_SUCCESS) {
+        std::cerr << "vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed: " << caps_result << std::endl;
+    }
 
     uint32_t format_count = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, nullptr);
+    VkResult fmt_result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, nullptr);
+    std::cout << "Surface format query: result=" << fmt_result << " count=" << format_count << std::endl;
     if (format_count == 0) {
         std::cerr << "No surface formats available" << std::endl;
         return false;

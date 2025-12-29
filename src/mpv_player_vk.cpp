@@ -43,19 +43,22 @@ bool MpvPlayerVk::init(VulkanContext* vk, WaylandSubsurface* subsurface) {
     }
 
     mpv_set_option_string(mpv_, "vo", "libmpv");
-    mpv_set_option_string(mpv_, "hwdec", "auto");
+    mpv_set_option_string(mpv_, "hwdec", "no");  // Force software decode for yuv420p10
     mpv_set_option_string(mpv_, "keep-open", "yes");
     mpv_set_option_string(mpv_, "terminal", "yes");
     mpv_set_option_string(mpv_, "msg-level", "all=v");
 
-    // HDR output configuration (before initialize for mpv options)
+    // HDR output configuration - tell mpv to output PQ/BT.2020
+    // We handle Wayland color signaling ourselves, so use explicit targets
     bool use_hdr = subsurface_ && subsurface_->isHdr();
     if (use_hdr) {
         mpv_set_option_string(mpv_, "target-prim", "bt.2020");
         mpv_set_option_string(mpv_, "target-trc", "pq");
+        mpv_set_option_string(mpv_, "target-colorspace-hint", "yes");
+        mpv_set_option_string(mpv_, "tone-mapping", "clip");  // No tone mapping for passthrough
         double peak = 1000.0;
         mpv_set_option(mpv_, "target-peak", MPV_FORMAT_DOUBLE, &peak);
-        std::cout << "mpv HDR output enabled (bt.2020/pq/1000 nits)" << std::endl;
+        std::cout << "mpv HDR output enabled (bt.2020/pq/1000 nits, no tonemapping)" << std::endl;
     }
 
     if (mpv_initialize(mpv_) < 0) {
@@ -63,17 +66,33 @@ bool MpvPlayerVk::init(VulkanContext* vk, WaylandSubsurface* subsurface) {
         return false;
     }
 
-    // Set up Vulkan render context
+    // Set up Vulkan render context - use subsurface's device if available for HDR
     mpv_vulkan_init_params vk_params{};
-    vk_params.instance = vk_->instance();
-    vk_params.physical_device = vk_->physicalDevice();
-    vk_params.device = vk_->device();
-    vk_params.graphics_queue = vk_->queue();
-    vk_params.graphics_queue_family = vk_->queueFamily();
-    vk_params.get_instance_proc_addr = vkGetInstanceProcAddr;
-    vk_params.features = vk_->features();
-    vk_params.extensions = vk_->deviceExtensions();
-    vk_params.num_extensions = vk_->deviceExtensionCount();
+    if (subsurface_ && subsurface_->vkDevice()) {
+        // Use subsurface's Vulkan device for HDR rendering
+        vk_params.instance = subsurface_->vkInstance();
+        vk_params.physical_device = subsurface_->vkPhysicalDevice();
+        vk_params.device = subsurface_->vkDevice();
+        vk_params.graphics_queue = subsurface_->vkQueue();
+        vk_params.graphics_queue_family = subsurface_->vkQueueFamily();
+        vk_params.get_instance_proc_addr = subsurface_->vkGetProcAddr();
+        // Use subsurface's features/extensions (same device that was created)
+        vk_params.features = subsurface_->features();
+        vk_params.extensions = subsurface_->deviceExtensions();
+        vk_params.num_extensions = subsurface_->deviceExtensionCount();
+        std::cout << "mpv using subsurface's Vulkan device for HDR" << std::endl;
+    } else {
+        // Use main VulkanContext
+        vk_params.instance = vk_->instance();
+        vk_params.physical_device = vk_->physicalDevice();
+        vk_params.device = vk_->device();
+        vk_params.graphics_queue = vk_->queue();
+        vk_params.graphics_queue_family = vk_->queueFamily();
+        vk_params.get_instance_proc_addr = vkGetInstanceProcAddr;
+        vk_params.features = vk_->features();
+        vk_params.extensions = vk_->deviceExtensions();
+        vk_params.num_extensions = vk_->deviceExtensionCount();
+    }
 
     int advanced_control = 1;
     mpv_render_param params[] = {

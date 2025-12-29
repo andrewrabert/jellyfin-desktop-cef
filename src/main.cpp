@@ -1,5 +1,5 @@
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 #include <iostream>
 #include <filesystem>
@@ -28,18 +28,26 @@ constexpr float IDLE_TIMEOUT_SEC = 5.0f;
 
 // Double/triple click detection
 constexpr int MULTI_CLICK_DISTANCE = 4;
-constexpr Uint32 MULTI_CLICK_TIME = 500;
+constexpr Uint64 MULTI_CLICK_TIME = 500;
 
 // Convert SDL modifier state to CEF modifier flags
-int sdlModsToCef(Uint16 sdlMods) {
+int sdlModsToCef(SDL_Keymod sdlMods) {
     int cef = 0;
-    if (sdlMods & KMOD_SHIFT) cef |= (1 << 1);
-    if (sdlMods & KMOD_CTRL)  cef |= (1 << 2);
-    if (sdlMods & KMOD_ALT)   cef |= (1 << 3);
+    if (sdlMods & SDL_KMOD_SHIFT) cef |= (1 << 1);
+    if (sdlMods & SDL_KMOD_CTRL)  cef |= (1 << 2);
+    if (sdlMods & SDL_KMOD_ALT)   cef |= (1 << 3);
     return cef;
 }
 
 int main(int argc, char* argv[]) {
+    // Parse CLI args for test video
+    std::string test_video;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--video") == 0 && i + 1 < argc) {
+            test_video = argv[++i];
+        }
+    }
+
     // CEF initialization
     CefMainArgs main_args(argc, argv);
     CefRefPtr<App> app(new App());
@@ -50,7 +58,7 @@ int main(int argc, char* argv[]) {
     }
 
     // SDL initialization with Vulkan
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
         return 1;
     }
@@ -60,9 +68,8 @@ int main(int argc, char* argv[]) {
 
     SDL_Window* window = SDL_CreateWindow(
         "Jellyfin Desktop",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         width, height,
-        SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE
     );
 
     if (!window) {
@@ -71,7 +78,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_StartTextInput();
+    SDL_StartTextInput(window);
 
     // Initialize Vulkan
     VulkanContext vk;
@@ -91,17 +98,18 @@ int main(int argc, char* argv[]) {
 
     // Initialize Wayland subsurface for HDR video
     WaylandSubsurface subsurface;
-    bool has_subsurface = false;
-    if (subsurface.init(window, vk.instance(), vk.physicalDevice(), vk.device(), vk.queueFamily())) {
-        if (subsurface.createSwapchain(width, height)) {
-            has_subsurface = true;
-            std::cout << "Using Wayland subsurface for video (HDR: "
-                      << (subsurface.isHdr() ? "yes" : "no") << ")" << std::endl;
-        }
+    if (!subsurface.init(window, vk.instance(), vk.physicalDevice(), vk.device(), vk.queueFamily(),
+                         vk.deviceExtensions(), vk.deviceExtensionCount(), vk.features())) {
+        std::cerr << "Fatal: Wayland subsurface init failed" << std::endl;
+        return 1;
     }
-    if (!has_subsurface) {
-        std::cout << "Wayland subsurface unavailable, using main swapchain for video" << std::endl;
+    if (!subsurface.createSwapchain(width, height)) {
+        std::cerr << "Fatal: Wayland subsurface swapchain failed" << std::endl;
+        return 1;
     }
+    bool has_subsurface = true;
+    std::cout << "Using Wayland subsurface for video (HDR: "
+              << (subsurface.isHdr() ? "yes" : "no") << ")" << std::endl;
 
     // Initialize mpv player
     MpvPlayerVk mpv;
@@ -211,7 +219,7 @@ int main(int argc, char* argv[]) {
     auto last_activity = Clock::now();
     float overlay_alpha = 1.0f;
     int mouse_x = 0, mouse_y = 0;
-    Uint32 last_click_time = 0;
+    Uint64 last_click_time = 0;
     int last_click_x = 0, last_click_y = 0;
     int last_click_button = 0;
     int click_count = 0;
@@ -240,6 +248,19 @@ int main(int argc, char* argv[]) {
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     vkCreateFence(vk.device(), &fence_info, nullptr, &in_flight);
 
+    // Auto-load test video if provided via --video
+    if (!test_video.empty()) {
+        std::cout << "[TEST] Loading video: " << test_video << std::endl;
+        if (mpv.loadFile(test_video)) {
+            has_video = true;
+            if (has_subsurface && subsurface.isHdr()) {
+                subsurface.setColorspace();
+            }
+        } else {
+            std::cerr << "[TEST] Failed to load: " << test_video << std::endl;
+        }
+    }
+
     // Main loop
     bool running = true;
     while (running && !client->isClosed()) {
@@ -253,29 +274,29 @@ int main(int argc, char* argv[]) {
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) running = false;
-            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) running = false;
+            if (event.type == SDL_EVENT_QUIT) running = false;
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) running = false;
 
-            if (event.type == SDL_MOUSEMOTION ||
-                event.type == SDL_MOUSEBUTTONDOWN ||
-                event.type == SDL_MOUSEBUTTONUP ||
-                event.type == SDL_MOUSEWHEEL ||
-                event.type == SDL_KEYDOWN ||
-                event.type == SDL_KEYUP) {
+            if (event.type == SDL_EVENT_MOUSE_MOTION ||
+                event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                event.type == SDL_EVENT_MOUSE_WHEEL ||
+                event.type == SDL_EVENT_KEY_DOWN ||
+                event.type == SDL_EVENT_KEY_UP) {
                 activity_this_frame = true;
             }
 
             int mods = sdlModsToCef(SDL_GetModState());
 
-            if (event.type == SDL_MOUSEMOTION) {
-                mouse_x = event.motion.x;
-                mouse_y = event.motion.y;
+            if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                mouse_x = static_cast<int>(event.motion.x);
+                mouse_y = static_cast<int>(event.motion.y);
                 client->sendMouseMove(mouse_x, mouse_y, mods);
-            } else if (event.type == SDL_MOUSEBUTTONDOWN) {
-                int x = event.button.x;
-                int y = event.button.y;
+            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                int x = static_cast<int>(event.button.x);
+                int y = static_cast<int>(event.button.y);
                 int btn = event.button.button;
-                Uint32 now_ticks = SDL_GetTicks();
+                Uint64 now_ticks = SDL_GetTicks();
 
                 int dx = x - last_click_x;
                 int dy = y - last_click_y;
@@ -296,29 +317,30 @@ int main(int argc, char* argv[]) {
 
                 client->sendFocus(true);
                 client->sendMouseClick(x, y, true, btn, click_count, mods);
-            } else if (event.type == SDL_MOUSEBUTTONUP) {
-                client->sendMouseClick(event.button.x, event.button.y, false, event.button.button, click_count, mods);
-            } else if (event.type == SDL_MOUSEWHEEL) {
-                client->sendMouseWheel(mouse_x, mouse_y, event.wheel.x, event.wheel.y, mods);
-            } else if (event.type == SDL_WINDOWEVENT) {
-                if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-                    client->sendFocus(true);
-                } else if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-                    client->sendFocus(false);
-                } else if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                    current_width = event.window.data1;
-                    current_height = event.window.data2;
-                    vkDeviceWaitIdle(vk.device());
-                    vk.recreateSwapchain(current_width, current_height);
-                    if (has_subsurface) {
-                        subsurface.recreateSwapchain(current_width, current_height);
-                    }
-                    compositor.resize(current_width, current_height);
-                    client->resize(current_width, current_height);
+            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                client->sendMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y),
+                                       false, event.button.button, click_count, mods);
+            } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+                client->sendMouseWheel(mouse_x, mouse_y,
+                                       static_cast<int>(event.wheel.x), static_cast<int>(event.wheel.y), mods);
+            } else if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+                client->sendFocus(true);
+            } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+                client->sendFocus(false);
+            } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+                current_width = event.window.data1;
+                current_height = event.window.data2;
+                vkDeviceWaitIdle(vk.device());
+                vk.recreateSwapchain(current_width, current_height);
+                compositor.resize(current_width, current_height);
+                client->resize(current_width, current_height);
+                if (has_subsurface) {
+                    vkDeviceWaitIdle(subsurface.vkDevice());
+                    subsurface.recreateSwapchain(current_width, current_height);
                 }
-            } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
-                bool down = (event.type == SDL_KEYDOWN);
-                SDL_Keycode key = event.key.keysym.sym;
+            } else if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+                bool down = (event.type == SDL_EVENT_KEY_DOWN);
+                SDL_Keycode key = event.key.key;
                 bool is_control_key = (key == SDLK_BACKSPACE || key == SDLK_DELETE ||
                     key == SDLK_RETURN || key == SDLK_ESCAPE ||
                     key == SDLK_TAB || key == SDLK_LEFT || key == SDLK_RIGHT ||
@@ -329,7 +351,7 @@ int main(int argc, char* argv[]) {
                 if (is_control_key || has_ctrl) {
                     client->sendKeyEvent(key, down, mods);
                 }
-            } else if (event.type == SDL_TEXTINPUT) {
+            } else if (event.type == SDL_EVENT_TEXT_INPUT) {
                 for (const char* c = event.text.text; *c; ++c) {
                     client->sendChar(static_cast<unsigned char>(*c), mods);
                 }
@@ -420,12 +442,10 @@ int main(int argc, char* argv[]) {
         VkResult result = vkAcquireNextImageKHR(vk.device(), vk.swapchain(), UINT64_MAX,
                                                  image_available, VK_NULL_HANDLE, &image_idx);
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            std::cerr << "Main swapchain out of date, recreating..." << std::endl;
             SDL_GetWindowSize(window, &current_width, &current_height);
             vkDeviceWaitIdle(vk.device());
             vk.recreateSwapchain(current_width, current_height);
-            if (has_subsurface) {
-                subsurface.recreateSwapchain(current_width, current_height);
-            }
             compositor.resize(current_width, current_height);
             continue;
         }
@@ -438,24 +458,15 @@ int main(int argc, char* argv[]) {
 
         // Render video to subsurface (if available) or main swapchain
         if (has_video && has_subsurface) {
-            // mpv renders to separate HDR subsurface
-            uint32_t sub_image_idx;
-            VkResult sub_result = vkAcquireNextImageKHR(vk.device(), subsurface.swapchain(), UINT64_MAX,
-                                                         VK_NULL_HANDLE, VK_NULL_HANDLE, &sub_image_idx);
-            if (sub_result == VK_SUCCESS || sub_result == VK_SUBOPTIMAL_KHR) {
-                mpv.render(subsurface.swapchainImages()[sub_image_idx],
-                          subsurface.swapchainViews()[sub_image_idx],
+            // mpv renders to separate HDR subsurface (using libplacebo swapchain)
+            VkImage sub_image;
+            VkImageView sub_view;
+            VkFormat sub_format;
+            if (subsurface.startFrame(&sub_image, &sub_view, &sub_format)) {
+                mpv.render(sub_image, sub_view,
                           subsurface.width(), subsurface.height(),
-                          subsurface.swapchainFormat());
-
-                VkPresentInfoKHR sub_present{};
-                sub_present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-                VkSwapchainKHR sub_swapchain = subsurface.swapchain();
-                sub_present.swapchainCount = 1;
-                sub_present.pSwapchains = &sub_swapchain;
-                sub_present.pImageIndices = &sub_image_idx;
-                vkQueuePresentKHR(vk.queue(), &sub_present);
-                subsurface.commit();
+                          sub_format);
+                subsurface.submitFrame();
             }
         } else if (has_video) {
             // Fallback: mpv renders to main swapchain (SDR)
@@ -496,10 +507,12 @@ int main(int argc, char* argv[]) {
                                  0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
 
-        // Composite overlay
-        float alpha = has_video ? overlay_alpha : 1.0f;
-        compositor.composite(cmd_buffer, vk.swapchainImages()[image_idx], vk.swapchainViews()[image_idx],
-                            vk.swapchainExtent().width, vk.swapchainExtent().height, alpha);
+        // Composite overlay (skip when using --video for HDR testing)
+        if (test_video.empty()) {
+            float alpha = has_video ? overlay_alpha : 1.0f;
+            compositor.composite(cmd_buffer, vk.swapchainImages()[image_idx], vk.swapchainViews()[image_idx],
+                                vk.swapchainExtent().width, vk.swapchainExtent().height, alpha);
+        }
 
         vkEndCommandBuffer(cmd_buffer);
 
@@ -529,12 +542,10 @@ int main(int argc, char* argv[]) {
 
         result = vkQueuePresentKHR(vk.queue(), &present_info);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            std::cerr << "Present returned " << result << ", recreating swapchain" << std::endl;
             SDL_GetWindowSize(window, &current_width, &current_height);
             vkDeviceWaitIdle(vk.device());
             vk.recreateSwapchain(current_width, current_height);
-            if (has_subsurface) {
-                subsurface.recreateSwapchain(current_width, current_height);
-            }
             compositor.resize(current_width, current_height);
         }
     }

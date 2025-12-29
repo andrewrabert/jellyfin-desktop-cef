@@ -14,26 +14,39 @@ public:
     ~WaylandSubsurface();
 
     bool init(SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice,
-              VkDevice device, uint32_t queueFamily);
+              VkDevice device, uint32_t queueFamily,
+              const char* const* extensions, int numExtensions,
+              const VkPhysicalDeviceFeatures2* features);
     bool createSwapchain(int width, int height);
     bool recreateSwapchain(int width, int height);
     void cleanup();
 
+    // Frame acquisition
+    bool startFrame(VkImage* outImage, VkImageView* outView, VkFormat* outFormat);
+    void submitFrame();
+
     // Accessors
     wl_display* display() const { return wl_display_; }
     wl_surface* surface() const { return mpv_surface_; }
-    VkSurfaceKHR vkSurface() const { return vk_surface_; }
-    VkSwapchainKHR swapchain() const { return swapchain_; }
     VkFormat swapchainFormat() const { return swapchain_format_; }
     VkExtent2D swapchainExtent() const { return swapchain_extent_; }
-    const std::vector<VkImage>& swapchainImages() const { return swapchain_images_; }
-    const std::vector<VkImageView>& swapchainViews() const { return swapchain_views_; }
     bool isHdr() const { return is_hdr_; }
     uint32_t width() const { return swapchain_extent_.width; }
     uint32_t height() const { return swapchain_extent_.height; }
 
+    // Vulkan handles for mpv (our own device, not libplacebo)
+    VkInstance vkInstance() const { return instance_; }
+    VkPhysicalDevice vkPhysicalDevice() const { return physical_device_; }
+    VkDevice vkDevice() const { return device_; }
+    VkQueue vkQueue() const;
+    uint32_t vkQueueFamily() const;
+    PFN_vkGetInstanceProcAddr vkGetProcAddr() const { return vkGetInstanceProcAddr; }
+    const VkPhysicalDeviceFeatures2* features() const { return &features2_; }
+    const char* const* deviceExtensions() const;
+    int deviceExtensionCount() const;
+
     void commit();
-    void setColorspace();  // Call when video playback starts
+    void setColorspace();
 
     // Wayland registry callbacks (public for C callback struct)
     static void registryGlobal(void* data, wl_registry* registry,
@@ -43,10 +56,8 @@ public:
 private:
     bool initWayland(SDL_Window* window);
     bool createSubsurface(wl_surface* parentSurface);
-    bool createVkSurface();
     bool initColorManagement();
     void destroySwapchain();
-    void setHdrMetadata();
 
     // Wayland
     wl_display* wl_display_ = nullptr;
@@ -60,17 +71,29 @@ private:
     wp_color_management_surface_v1* color_surface_ = nullptr;
     wp_image_description_v1* hdr_image_desc_ = nullptr;
 
-    // Vulkan
+    // Vulkan (our own instance/device, like old jellyfin-desktop)
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
+    VkQueue queue_ = VK_NULL_HANDLE;
     uint32_t queue_family_ = 0;
     VkSurfaceKHR vk_surface_ = VK_NULL_HANDLE;
+
+    // Features for mpv
+    VkPhysicalDeviceVulkan11Features vk11_features_{};
+    VkPhysicalDeviceVulkan12Features vk12_features_{};
+    VkPhysicalDeviceFeatures2 features2_{};
+
+    // Swapchain
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat swapchain_format_ = VK_FORMAT_R16G16B16A16_UNORM;
-    VkColorSpaceKHR swapchain_color_space_ = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+    VkColorSpaceKHR color_space_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D swapchain_extent_ = {0, 0};
+    bool is_hdr_ = false;
     std::vector<VkImage> swapchain_images_;
     std::vector<VkImageView> swapchain_views_;
-    bool is_hdr_ = false;
+    VkSemaphore image_available_ = VK_NULL_HANDLE;
+    VkFence acquire_fence_ = VK_NULL_HANDLE;
+    uint32_t current_image_idx_ = 0;
+    bool frame_active_ = false;
 };
