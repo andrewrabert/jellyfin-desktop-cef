@@ -146,7 +146,7 @@ int main(int argc, char* argv[]) {
     CefSettings settings;
     settings.windowless_rendering_enabled = true;
     settings.no_sandbox = true;
-    settings.multi_threaded_message_loop = true;  // CEF runs on separate thread
+    settings.multi_threaded_message_loop = true;
 
     std::filesystem::path exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
     CefString(&settings.resources_dir_path).FromString(exe_path.string());
@@ -175,6 +175,10 @@ int main(int argc, char* argv[]) {
         CefString(&settings.cache_path).FromString((cache_path / "cache").string());
     }
 
+    // Set GPU overlay mode before CefInitialize (affects command line processing)
+    App::SetGpuOverlayEnabled(use_gpu_overlay);
+    std::cout << "CEF rendering: " << (use_gpu_overlay ? "GPU (DMA-BUF)" : "software") << std::endl;
+
     if (!CefInitialize(main_args, settings, app, nullptr)) {
         std::cerr << "CefInitialize failed" << std::endl;
         SDL_DestroyWindow(window);
@@ -183,9 +187,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Create browser
-    std::atomic<bool> texture_dirty{false};
     std::mutex buffer_mutex;
-    std::vector<uint8_t> paint_buffer_copy;
     int paint_width = 0, paint_height = 0;
 
     // Player command queue
@@ -234,14 +236,15 @@ int main(int argc, char* argv[]) {
 
     CefRefPtr<Client> client(new Client(width, height,
         [&](const void* buffer, int w, int h) {
-            // Software paint fallback
+            // Copy directly to compositor staging buffer (single memcpy)
             std::lock_guard<std::mutex> lock(buffer_mutex);
-            size_t size = w * h * 4;
-            paint_buffer_copy.resize(size);
-            memcpy(paint_buffer_copy.data(), buffer, size);
+            void* staging = compositor.getStagingBuffer(w, h);
+            if (staging) {
+                memcpy(staging, buffer, w * h * 4);
+                compositor.markStagingDirty();
+            }
             paint_width = w;
             paint_height = h;
-            texture_dirty = true;
         },
         [&](const std::string& cmd, const std::string& arg, int intArg) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
@@ -267,9 +270,6 @@ int main(int argc, char* argv[]) {
     window_info.SetAsWindowless(0);
 #if defined(CEF_X11) || defined(__linux__)
     window_info.shared_texture_enabled = use_gpu_overlay;
-    if (use_gpu_overlay) {
-        std::cout << "GPU overlay enabled (DMA-BUF shared textures)" << std::endl;
-    }
 #endif
 
     CefBrowserSettings browser_settings;
@@ -338,6 +338,7 @@ int main(int argc, char* argv[]) {
 
     // Main loop
     bool running = true;
+    bool needs_render = true;  // Render first frame
     while (running && !client->isClosed()) {
         auto now = Clock::now();
         bool activity_this_frame = false;
@@ -347,8 +348,19 @@ int main(int argc, char* argv[]) {
             focus_set = true;
         }
 
+        // Event-driven: wait for events when idle, poll when active
+        // This saves CPU/power when nothing is happening
         SDL_Event event;
-        while (SDL_PollEvent(&event)) {
+        bool have_event;
+        if (needs_render || has_video || compositor.hasPendingContent()) {
+            // Active: poll without blocking
+            have_event = SDL_PollEvent(&event);
+        } else {
+            // Idle: wait up to 16ms for events (saves CPU)
+            have_event = SDL_WaitEventTimeout(&event, 16);
+        }
+
+        while (have_event) {
             if (event.type == SDL_EVENT_QUIT) running = false;
             if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !menu.isOpen()) running = false;
 
@@ -462,6 +474,15 @@ int main(int argc, char* argv[]) {
                     client->sendChar(static_cast<unsigned char>(*c), mods);
                 }
             }
+            have_event = SDL_PollEvent(&event);
+        }
+
+        // Determine if we need to render this frame
+        needs_render = activity_this_frame || has_video || compositor.hasPendingContent();
+
+        // Skip rendering if nothing to do (saves GPU)
+        if (!needs_render) {
+            continue;
         }
 
         if (activity_this_frame) {
@@ -516,8 +537,6 @@ int main(int argc, char* argv[]) {
             overlay_alpha = std::max(0.0f, 1.0f - fade_progress);
         }
 
-        // CEF runs on separate thread (multi_threaded_message_loop)
-
         // Update position/duration
         static auto last_position_update = Clock::now();
         if (has_video && mpv.isPlaying()) {
@@ -533,24 +552,8 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Software path if DMA-BUF not available/enabled
-        // Also update when menu is open or just closed (need to blend/unblend menu overlay)
-        if (texture_dirty || menu.isOpen() || menu.needsRedraw()) {
-            std::lock_guard<std::mutex> lock(buffer_mutex);
-            if (!paint_buffer_copy.empty()) {
-                if (menu.isOpen()) {
-                    // Blend menu onto a working copy (don't corrupt original)
-                    static std::vector<uint8_t> blend_buffer;
-                    blend_buffer.assign(paint_buffer_copy.begin(), paint_buffer_copy.end());
-                    menu.blendOnto(blend_buffer.data(), paint_width, paint_height);
-                    compositor.updateOverlay(blend_buffer.data(), paint_width, paint_height);
-                } else {
-                    compositor.updateOverlay(paint_buffer_copy.data(), paint_width, paint_height);
-                }
-            }
-            texture_dirty = false;
-            menu.clearRedraw();
-        }
+        // Menu overlay blending now handled separately (TODO: GPU-based menu rendering)
+        menu.clearRedraw();
 
         // Wait for previous frame
         vkWaitForFences(vk.device(), 1, &in_flight, VK_TRUE, UINT64_MAX);
@@ -574,6 +577,9 @@ int main(int argc, char* argv[]) {
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd_buffer, &begin_info);
+
+        // Flush pending overlay data to GPU (non-blocking, just records commands)
+        compositor.flushOverlay(cmd_buffer);
 
         // Render video to subsurface (if available) or main swapchain
         if (has_video && has_subsurface && mpv.hasFrame()) {

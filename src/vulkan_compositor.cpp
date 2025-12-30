@@ -571,17 +571,28 @@ void VulkanCompositor::updateOverlay(const void* data, int width, int height) {
 
     // Skip if size doesn't match - CEF hasn't caught up yet
     if (!staging_mapped_ || width != static_cast<int>(width_) || height != static_cast<int>(height_)) {
-        COMP_LOG("updateOverlay: " << width << "x" << height << " (want: " << width_ << "x" << height_ << ") - skipping");
         return;
     }
-    COMP_LOG("updateOverlay: " << width << "x" << height);
 
-    // Copy data to staging buffer
+    // Just copy to staging buffer - GPU transfer happens in flushOverlay()
     std::memcpy(staging_mapped_, data, width * height * 4);
+    staging_pending_ = true;
+}
 
-    // Transfer to local image
-    COMP_LOG("updateOverlay: beginning GPU transfer");
-    VkCommandBuffer cmd = vk_->beginSingleTimeCommands();
+void* VulkanCompositor::getStagingBuffer(int width, int height) {
+    // No lock - caller is responsible for thread safety
+    if (!staging_mapped_ || width != static_cast<int>(width_) || height != static_cast<int>(height_)) {
+        return nullptr;
+    }
+    return staging_mapped_;
+}
+
+bool VulkanCompositor::flushOverlay(VkCommandBuffer cmd) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!staging_pending_ || !staging_buffer_ || !local_image_) {
+        return false;
+    }
 
     // Transition to transfer dst
     VkImageMemoryBarrier barrier{};
@@ -618,10 +629,9 @@ void VulkanCompositor::updateOverlay(const void* data, int width, int height) {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    COMP_LOG("updateOverlay: submitting GPU transfer");
-    vk_->endSingleTimeCommands(cmd);
-    COMP_LOG("updateOverlay: done");
+    staging_pending_ = false;
     has_content_ = true;
+    return true;
 }
 
 bool VulkanCompositor::updateOverlayFromDmaBuf(const AcceleratedPaintInfo& info) {

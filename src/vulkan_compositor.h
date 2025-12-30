@@ -14,7 +14,18 @@ public:
     void cleanup();
 
     // Update overlay texture from CEF buffer (BGRA) - software path
+    // Just copies to staging buffer, call flushOverlay() to upload to GPU
     void updateOverlay(const void* data, int width, int height);
+
+    // Get direct pointer to staging buffer for zero-copy writes
+    // Returns nullptr if size doesn't match or not initialized
+    void* getStagingBuffer(int width, int height);
+    void markStagingDirty() { staging_pending_ = true; }
+    bool hasPendingContent() const { return staging_pending_; }
+
+    // Flush pending overlay data to GPU (call from render loop with active command buffer)
+    // Returns true if there was data to flush
+    bool flushOverlay(VkCommandBuffer cmd);
 
     // Update overlay from DMA-BUF - hardware accelerated path
     // Copies to local buffer and releases DMA-BUF immediately
@@ -52,6 +63,7 @@ private:
     VkBuffer staging_buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory staging_memory_ = VK_NULL_HANDLE;
     void* staging_mapped_ = nullptr;
+    bool staging_pending_ = false;  // Data waiting to be flushed to GPU
 
     // DMA-BUF support
     bool dmabuf_supported_ = true;  // Set false if import fails

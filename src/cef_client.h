@@ -58,6 +58,8 @@ public:
 
     // CefRenderHandler
     void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
+    void OnPopupShow(CefRefPtr<CefBrowser> browser, bool show) override;
+    void OnPopupSize(CefRefPtr<CefBrowser> browser, const CefRect& rect) override;
     void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                  const RectList& dirtyRects, const void* buffer,
                  int width, int height) override;
@@ -110,6 +112,12 @@ private:
     MenuOverlay* menu_ = nullptr;
     std::atomic<bool> is_closed_ = false;
     CefRefPtr<CefBrowser> browser_;
+
+    // Popup (dropdown) state
+    bool popup_visible_ = false;
+    CefRect popup_rect_;
+    std::vector<uint8_t> popup_buffer_;
+    std::vector<uint8_t> composite_buffer_;  // Main view + popup blended
 
     IMPLEMENT_REFCOUNTING(Client);
     DISALLOW_COPY_AND_ASSIGN(Client);

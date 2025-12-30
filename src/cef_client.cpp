@@ -83,12 +83,75 @@ void Client::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
     rect.Set(0, 0, width_, height_);
 }
 
+void Client::OnPopupShow(CefRefPtr<CefBrowser> browser, bool show) {
+    popup_visible_ = show;
+    if (!show) {
+        popup_buffer_.clear();
+    }
+}
+
+void Client::OnPopupSize(CefRefPtr<CefBrowser> browser, const CefRect& rect) {
+    popup_rect_ = rect;
+}
+
 void Client::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                      const RectList& dirtyRects, const void* buffer,
                      int width, int height) {
-    if (on_paint_) {
-        on_paint_(buffer, width, height);
+    if (!on_paint_) return;
+
+    if (type == PET_POPUP) {
+        // Store popup buffer for compositing
+        size_t size = width * height * 4;
+        popup_buffer_.resize(size);
+        memcpy(popup_buffer_.data(), buffer, size);
+        // Request main view repaint to composite popup
+        if (browser) {
+            browser->GetHost()->Invalidate(PET_VIEW);
+        }
+        return;
     }
+
+    // PET_VIEW - main view
+    // Fast path: no popup, pass buffer directly (zero extra copies)
+    if (!popup_visible_ || popup_buffer_.empty()) {
+        on_paint_(buffer, width, height);
+        return;
+    }
+
+    // Slow path: blend popup onto view (only when dropdown is visible)
+    size_t size = width * height * 4;
+    composite_buffer_.resize(size);
+    memcpy(composite_buffer_.data(), buffer, size);
+
+    int px = popup_rect_.x;
+    int py = popup_rect_.y;
+    int pw = popup_rect_.width;
+    int ph = popup_rect_.height;
+    for (int y = 0; y < ph; y++) {
+        int dst_y = py + y;
+        if (dst_y < 0 || dst_y >= height) continue;
+        for (int x = 0; x < pw; x++) {
+            int dst_x = px + x;
+            if (dst_x < 0 || dst_x >= width) continue;
+            int src_i = (y * pw + x) * 4;
+            int dst_i = (dst_y * width + dst_x) * 4;
+            if (src_i + 3 >= static_cast<int>(popup_buffer_.size())) continue;
+            uint8_t alpha = popup_buffer_[src_i + 3];
+            if (alpha == 255) {
+                composite_buffer_[dst_i + 0] = popup_buffer_[src_i + 0];
+                composite_buffer_[dst_i + 1] = popup_buffer_[src_i + 1];
+                composite_buffer_[dst_i + 2] = popup_buffer_[src_i + 2];
+                composite_buffer_[dst_i + 3] = 255;
+            } else if (alpha > 0) {
+                uint8_t inv = 255 - alpha;
+                composite_buffer_[dst_i + 0] = (popup_buffer_[src_i + 0] * alpha + composite_buffer_[dst_i + 0] * inv) / 255;
+                composite_buffer_[dst_i + 1] = (popup_buffer_[src_i + 1] * alpha + composite_buffer_[dst_i + 1] * inv) / 255;
+                composite_buffer_[dst_i + 2] = (popup_buffer_[src_i + 2] * alpha + composite_buffer_[dst_i + 2] * inv) / 255;
+                composite_buffer_[dst_i + 3] = 255;
+            }
+        }
+    }
+    on_paint_(composite_buffer_.data(), width, height);
 }
 
 void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
@@ -143,9 +206,7 @@ void Client::sendMouseMove(int x, int y, int modifiers) {
 
 void Client::sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) {
     if (!browser_) return;
-    if (button == 3) {
-        std::cerr << "[Mouse] Right-click " << (down ? "DOWN" : "UP") << " at " << x << "," << y << std::endl;
-    }
+    std::cerr << "[Mouse] Button " << button << " " << (down ? "DOWN" : "UP") << " at " << x << "," << y << " clicks=" << clickCount << std::endl;
     CefMouseEvent event;
     event.x = x;
     event.y = y;

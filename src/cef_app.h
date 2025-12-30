@@ -20,6 +20,10 @@ class App : public CefApp,
 public:
     App() = default;
 
+    // Set before CefInitialize to enable GPU overlay (DMA-BUF shared textures)
+    static void SetGpuOverlayEnabled(bool enabled) { gpu_overlay_enabled_ = enabled; }
+    static bool IsGpuOverlayEnabled() { return gpu_overlay_enabled_; }
+
     // CefApp
     CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
     CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
@@ -39,6 +43,8 @@ public:
                          CefRefPtr<CefV8Context> context) override;
 
 private:
+    static inline bool gpu_overlay_enabled_ = false;
+
     IMPLEMENT_REFCOUNTING(App);
     DISALLOW_COPY_AND_ASSIGN(App);
 };
