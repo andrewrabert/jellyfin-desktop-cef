@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
 
     // Initialize OpenGL compositor for CEF overlay
     OpenGLCompositor compositor;
-    if (!compositor.init(&egl, width, height)) {
+    if (!compositor.init(&egl, width, height, use_gpu_overlay)) {
         std::cerr << "OpenGLCompositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();

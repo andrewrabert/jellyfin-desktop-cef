@@ -11,7 +11,7 @@ public:
     OpenGLCompositor();
     ~OpenGLCompositor();
 
-    bool init(EGLContext_* egl, uint32_t width, uint32_t height);
+    bool init(EGLContext_* egl, uint32_t width, uint32_t height, bool use_dmabuf = false);
     void cleanup();
 
     // Update overlay texture from CEF buffer (BGRA) - software path
@@ -62,16 +62,18 @@ private:
     void* pbo_mapped_ = nullptr;
     bool staging_pending_ = false;
 
-    // DMA-BUF support
+    // DMA-BUF support (triple buffered)
+    bool use_dmabuf_ = false;
     bool dmabuf_supported_ = true;
     AcceleratedPaintInfo pending_dmabuf_;
     bool dmabuf_queued_ = false;
+    static constexpr int NUM_BUFFERS = 3;
+    EGLImage images_[NUM_BUFFERS] = {EGL_NO_IMAGE_KHR, EGL_NO_IMAGE_KHR, EGL_NO_IMAGE_KHR};
+    int dmabuf_fds_[NUM_BUFFERS] = {-1, -1, -1};
+    int buffer_index_ = 0;
 
     // Thread safety
     std::mutex mutex_;
-
-    // Skip DMA-BUF imports briefly after resize
-    std::chrono::steady_clock::time_point last_resize_time_;
 
     // Shader program
     GLuint program_ = 0;

@@ -39,10 +39,11 @@ OpenGLCompositor::~OpenGLCompositor() {
     cleanup();
 }
 
-bool OpenGLCompositor::init(EGLContext_* egl, uint32_t width, uint32_t height) {
+bool OpenGLCompositor::init(EGLContext_* egl, uint32_t width, uint32_t height, bool use_dmabuf) {
     egl_ = egl;
     width_ = width;
     height_ = height;
+    use_dmabuf_ = use_dmabuf;
 
     if (!createTexture()) return false;
     if (!createShader()) return false;
@@ -61,7 +62,12 @@ bool OpenGLCompositor::createTexture() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    // Allocate texture storage (BGRA format)
+    // DMA-BUF path: EGLImage provides texture backing, skip PBO setup
+    if (use_dmabuf_) {
+        return true;
+    }
+
+    // Software path: allocate texture storage and PBOs
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, nullptr);
 
     // Create double-buffered PBOs for async upload
@@ -223,14 +229,6 @@ bool OpenGLCompositor::importQueuedDmaBuf() {
         return false;
     }
 
-    // Skip DMA-BUF imports briefly after resize
-    auto since_resize = std::chrono::steady_clock::now() - last_resize_time_;
-    if (since_resize < std::chrono::milliseconds(150)) {
-        COMP_LOG("importQueuedDmaBuf: skipping (resize cooldown)");
-        close(info.planes[0].fd);
-        return false;
-    }
-
     // Skip if size doesn't match
     if (static_cast<uint32_t>(info.width) != width_ || static_cast<uint32_t>(info.height) != height_) {
         COMP_LOG("importQueuedDmaBuf: " << info.width << "x" << info.height << " (want: " << width_ << "x" << height_ << ") - skipping");
@@ -283,9 +281,16 @@ bool OpenGLCompositor::importQueuedDmaBuf() {
         return false;
     }
 
-    // EGL owns the fd now after successful import
-    egl_->eglDestroyImageKHR(egl_->display(), image);
-    close(info.planes[0].fd);
+    // Release oldest buffer in ring, store new one (triple buffering)
+    if (images_[buffer_index_] != EGL_NO_IMAGE_KHR) {
+        egl_->eglDestroyImageKHR(egl_->display(), images_[buffer_index_]);
+    }
+    if (dmabuf_fds_[buffer_index_] >= 0) {
+        close(dmabuf_fds_[buffer_index_]);
+    }
+    images_[buffer_index_] = image;
+    dmabuf_fds_[buffer_index_] = info.planes[0].fd;
+    buffer_index_ = (buffer_index_ + 1) % NUM_BUFFERS;
 
     COMP_LOG("importQueuedDmaBuf: done");
     has_content_ = true;
@@ -324,7 +329,31 @@ void OpenGLCompositor::resize(uint32_t width, uint32_t height) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    last_resize_time_ = std::chrono::steady_clock::now();
+
+    // Clear any pending DMA-BUF (stale after resize)
+    if (dmabuf_queued_ && !pending_dmabuf_.planes.empty()) {
+        for (auto& plane : pending_dmabuf_.planes) {
+            if (plane.fd >= 0) close(plane.fd);
+        }
+        pending_dmabuf_.planes.clear();
+        dmabuf_queued_ = false;
+    }
+
+    // Wait for GPU to finish using current buffers before releasing
+    glFinish();
+
+    // Release all EGLImages in ring buffer
+    for (int i = 0; i < NUM_BUFFERS; i++) {
+        if (images_[i] != EGL_NO_IMAGE_KHR) {
+            egl_->eglDestroyImageKHR(egl_->display(), images_[i]);
+            images_[i] = EGL_NO_IMAGE_KHR;
+        }
+        if (dmabuf_fds_[i] >= 0) {
+            close(dmabuf_fds_[i]);
+            dmabuf_fds_[i] = -1;
+        }
+    }
+    buffer_index_ = 0;
 
     destroyTexture();
 
@@ -357,6 +386,18 @@ void OpenGLCompositor::destroyTexture() {
 
 void OpenGLCompositor::cleanup() {
     if (!egl_) return;
+
+    // Release all EGLImages in ring buffer
+    for (int i = 0; i < NUM_BUFFERS; i++) {
+        if (images_[i] != EGL_NO_IMAGE_KHR) {
+            egl_->eglDestroyImageKHR(egl_->display(), images_[i]);
+            images_[i] = EGL_NO_IMAGE_KHR;
+        }
+        if (dmabuf_fds_[i] >= 0) {
+            close(dmabuf_fds_[i]);
+            dmabuf_fds_[i] = -1;
+        }
+    }
 
     destroyTexture();
 
