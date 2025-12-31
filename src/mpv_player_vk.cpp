@@ -45,8 +45,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, WaylandSubsurface* subsurface) {
     mpv_set_option_string(mpv_, "vo", "libmpv");
     mpv_set_option_string(mpv_, "hwdec", "no");  // Force software decode for yuv420p10
     mpv_set_option_string(mpv_, "keep-open", "yes");
-    mpv_set_option_string(mpv_, "terminal", "yes");
-    mpv_set_option_string(mpv_, "msg-level", "all=v");
+    mpv_set_option_string(mpv_, "terminal", "no");
     mpv_set_option_string(mpv_, "video-sync", "audio");  // Simple audio sync, no frame interpolation
     mpv_set_option_string(mpv_, "interpolation", "no");  // Disable motion interpolation
 
@@ -60,7 +59,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, WaylandSubsurface* subsurface) {
         mpv_set_option_string(mpv_, "tone-mapping", "clip");  // No tone mapping for passthrough
         double peak = 1000.0;
         mpv_set_option(mpv_, "target-peak", MPV_FORMAT_DOUBLE, &peak);
-        std::cout << "mpv HDR output enabled (bt.2020/pq/1000 nits, no tonemapping)" << std::endl;
+        std::cerr << "mpv HDR output enabled (bt.2020/pq/1000 nits, no tonemapping)" << std::endl;
     }
 
     if (mpv_initialize(mpv_) < 0) {
@@ -82,7 +81,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, WaylandSubsurface* subsurface) {
         vk_params.features = subsurface_->features();
         vk_params.extensions = subsurface_->deviceExtensions();
         vk_params.num_extensions = subsurface_->deviceExtensionCount();
-        std::cout << "mpv using subsurface's Vulkan device for HDR" << std::endl;
+        std::cerr << "mpv using subsurface's Vulkan device for HDR" << std::endl;
     } else {
         // Use main VulkanContext
         vk_params.instance = vk_->instance();
@@ -113,7 +112,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, WaylandSubsurface* subsurface) {
 
     mpv_render_context_set_update_callback(render_ctx_, onMpvRedraw, this);
 
-    std::cout << "mpv Vulkan render context created" << std::endl;
+    std::cerr << "mpv Vulkan render context created" << std::endl;
     return true;
 }
 

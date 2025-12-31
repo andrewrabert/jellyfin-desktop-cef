@@ -117,7 +117,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     bool has_subsurface = true;
-    std::cout << "Using macOS CAMetalLayer for video (HDR: "
+    std::cerr << "Using macOS CAMetalLayer for video (HDR: "
               << (videoLayer.isHdr() ? "yes" : "no") << ")" << std::endl;
 
     // Initialize mpv player (using video layer's Vulkan context)
@@ -160,7 +160,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     bool has_subsurface = true;
-    std::cout << "Using Wayland subsurface for video (HDR: "
+    std::cerr << "Using Wayland subsurface for video (HDR: "
               << (subsurface.isHdr() ? "yes" : "no") << ")" << std::endl;
 
     // Initialize mpv player (using subsurface's Vulkan context)
@@ -233,7 +233,7 @@ int main(int argc, char* argv[]) {
 
     // Set GPU overlay mode before CefInitialize (affects command line processing)
     App::SetGpuOverlayEnabled(use_gpu_overlay);
-    std::cout << "CEF rendering: " << (use_gpu_overlay ? "GPU (DMA-BUF)" : "software") << std::endl;
+    std::cerr << "CEF rendering: " << (use_gpu_overlay ? "GPU (DMA-BUF)" : "software") << std::endl;
 
     if (!CefInitialize(main_args, settings, app, nullptr)) {
         std::cerr << "CefInitialize failed" << std::endl;
@@ -304,13 +304,13 @@ int main(int argc, char* argv[]) {
     const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
     if (mode && mode->refresh_rate > 0) {
         browser_settings.windowless_frame_rate = static_cast<int>(mode->refresh_rate);
-        std::cout << "CEF frame rate: " << mode->refresh_rate << " Hz" << std::endl;
+        std::cerr << "CEF frame rate: " << mode->refresh_rate << " Hz" << std::endl;
     } else {
         browser_settings.windowless_frame_rate = 60;
     }
 
     std::string html_path = "file://" + (exe_path / "resources" / "index.html").string();
-    std::cout << "Loading: " << html_path << std::endl;
+    std::cerr << "Loading: " << html_path << std::endl;
 
     CefBrowserHost::CreateBrowser(window_info, client, html_path, browser_settings, nullptr, nullptr);
 
@@ -329,7 +329,7 @@ int main(int argc, char* argv[]) {
 
     // Auto-load test video if provided via --video
     if (!test_video.empty()) {
-        std::cout << "[TEST] Loading video: " << test_video << std::endl;
+        std::cerr << "[TEST] Loading video: " << test_video << std::endl;
         if (mpv.loadFile(test_video)) {
             has_video = true;
             if (has_subsurface && subsurface.isHdr()) {
@@ -505,7 +505,7 @@ int main(int argc, char* argv[]) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
             for (const auto& cmd : pending_cmds) {
                 if (cmd.cmd == "load") {
-                    std::cout << "[MAIN] playerLoad: " << cmd.url << std::endl;
+                    std::cerr << "[MAIN] playerLoad: " << cmd.url << std::endl;
                     if (mpv.loadFile(cmd.url)) {
                         has_video = true;
 #ifdef __APPLE__

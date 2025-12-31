@@ -33,7 +33,7 @@ bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
         case LOGSEVERITY_ERROR: levelStr = "ERROR"; break;
         default: levelStr = "LOG"; break;
     }
-    std::cout << "[JS:" << levelStr << "] " << message.ToString() << std::endl;
+    std::cerr << "[JS:" << levelStr << "] " << message.ToString() << std::endl;
     return false;  // Allow default handling too
 }
 
@@ -46,7 +46,7 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
     std::string name = message->GetName().ToString();
     CefRefPtr<CefListValue> args = message->GetArgumentList();
 
-    std::cout << "[IPC] Received message: " << name << std::endl;
+    std::cerr << "[IPC] Received message: " << name << std::endl;
 
     if (name == "playerLoad") {
         std::string url = args->GetString(0).ToString();
@@ -76,7 +76,7 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         return true;
     } else if (name == "saveServerUrl") {
         std::string url = args->GetString(0).ToString();
-        std::cout << "[IPC] Saving server URL: " << url << std::endl;
+        std::cerr << "[IPC] Saving server URL: " << url << std::endl;
         Settings::instance().setServerUrl(url);
         Settings::instance().save();
         return true;
@@ -197,11 +197,11 @@ void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType 
 
 void Client::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     browser_ = browser;
-    std::cout << "Browser created" << std::endl;
+    std::cerr << "Browser created" << std::endl;
 }
 
 void Client::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
-    std::cout << "Browser closing" << std::endl;
+    std::cerr << "Browser closing" << std::endl;
     browser_ = nullptr;
     is_closed_ = true;
 }

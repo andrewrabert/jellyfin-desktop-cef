@@ -69,7 +69,7 @@ void WaylandSubsurface::registryGlobal(void* data, wl_registry* registry,
     } else if (strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
         self->color_manager_ = static_cast<wp_color_manager_v1*>(
             wl_registry_bind(registry, name, &wp_color_manager_v1_interface, std::min(version, 1u)));
-        std::cout << "Bound wp_color_manager_v1" << std::endl;
+        std::cerr << "Bound wp_color_manager_v1" << std::endl;
     }
 }
 
@@ -128,7 +128,7 @@ bool WaylandSubsurface::createSubsurface(wl_surface* parentSurface) {
     wl_surface_commit(mpv_surface_);
     wl_display_roundtrip(wl_display_);
 
-    std::cout << "Created mpv subsurface below main window" << std::endl;
+    std::cerr << "Created mpv subsurface below main window" << std::endl;
     return true;
 }
 
@@ -244,7 +244,7 @@ bool WaylandSubsurface::init(SDL_Window* window, VkInstance, VkPhysicalDevice,
         return false;
     }
 
-    std::cout << "Vulkan subsurface initialized (manual instance/device)" << std::endl;
+    std::cerr << "Vulkan subsurface initialized (manual instance/device)" << std::endl;
     return true;
 }
 
@@ -267,7 +267,7 @@ bool WaylandSubsurface::createSwapchain(int width, int height) {
             swapchain_format_ = fmt.format;
             color_space_ = fmt.colorSpace;
             is_hdr_ = true;
-            std::cout << "Using PASS_THROUGH with R16G16B16A16_UNORM (format 91)" << std::endl;
+            std::cerr << "Using PASS_THROUGH with R16G16B16A16_UNORM (format 91)" << std::endl;
             break;
         }
     }
@@ -281,7 +281,7 @@ bool WaylandSubsurface::createSwapchain(int width, int height) {
                     swapchain_format_ = fmt.format;
                     color_space_ = fmt.colorSpace;
                     is_hdr_ = true;
-                    std::cout << "Using PASS_THROUGH with 10-bit format " << fmt.format << std::endl;
+                    std::cerr << "Using PASS_THROUGH with 10-bit format " << fmt.format << std::endl;
                     break;
                 }
             }
@@ -289,7 +289,7 @@ bool WaylandSubsurface::createSwapchain(int width, int height) {
     }
 
     if (!is_hdr_) {
-        std::cout << "PASS_THROUGH not available, using SDR" << std::endl;
+        std::cerr << "PASS_THROUGH not available, using SDR" << std::endl;
     }
 
     // Get surface capabilities
@@ -345,7 +345,7 @@ bool WaylandSubsurface::createSwapchain(int width, int height) {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     vkCreateFence(device_, &fenceInfo, nullptr, &acquire_fence_);
 
-    std::cout << "Swapchain: " << width << "x" << height
+    std::cerr << "Swapchain: " << width << "x" << height
               << " format=" << swapchain_format_
               << " colorSpace=" << color_space_
               << " HDR=" << (is_hdr_ ? "yes" : "no") << std::endl;
@@ -355,7 +355,7 @@ bool WaylandSubsurface::createSwapchain(int width, int height) {
 
 bool WaylandSubsurface::initColorManagement() {
     if (!color_manager_) {
-        std::cout << "Color manager not available" << std::endl;
+        std::cerr << "Color manager not available" << std::endl;
         return false;
     }
 
@@ -365,7 +365,7 @@ bool WaylandSubsurface::initColorManagement() {
         return false;
     }
 
-    std::cout << "Created color management surface" << std::endl;
+    std::cerr << "Created color management surface" << std::endl;
     return true;
 }
 
@@ -419,7 +419,7 @@ void WaylandSubsurface::setColorspace() {
         WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
     wl_surface_commit(mpv_surface_);
     wl_display_flush(wl_display_);
-    std::cout << "Set Wayland surface colorspace to PQ/BT.2020" << std::endl;
+    std::cerr << "Set Wayland surface colorspace to PQ/BT.2020" << std::endl;
 }
 
 bool WaylandSubsurface::startFrame(VkImage* outImage, VkImageView* outView, VkFormat* outFormat) {

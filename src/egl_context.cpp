@@ -38,13 +38,13 @@ bool EGLContext_::init(SDL_Window* window) {
         std::cerr << "[EGL] Failed to initialize EGL" << std::endl;
         return false;
     }
-    std::cout << "[EGL] Initialized EGL " << major << "." << minor << std::endl;
+    std::cerr << "[EGL] Initialized EGL " << major << "." << minor << std::endl;
 
     // Check extensions
     const char* extensions = eglQueryString(display_, EGL_EXTENSIONS);
     if (extensions) {
         has_dmabuf_import_ = strstr(extensions, "EGL_EXT_image_dma_buf_import") != nullptr;
-        std::cout << "[EGL] DMA-BUF import: " << (has_dmabuf_import_ ? "yes" : "no") << std::endl;
+        std::cerr << "[EGL] DMA-BUF import: " << (has_dmabuf_import_ ? "yes" : "no") << std::endl;
     }
 
     // Load extension functions
@@ -115,9 +115,9 @@ bool EGLContext_::init(SDL_Window* window) {
     // Enable vsync
     eglSwapInterval(display_, 1);
 
-    std::cout << "[EGL] Context created successfully" << std::endl;
-    std::cout << "[EGL] GL_VERSION: " << glGetString(GL_VERSION) << std::endl;
-    std::cout << "[EGL] GL_RENDERER: " << glGetString(GL_RENDERER) << std::endl;
+    std::cerr << "[EGL] Context created successfully" << std::endl;
+    std::cerr << "[EGL] GL_VERSION: " << glGetString(GL_VERSION) << std::endl;
+    std::cerr << "[EGL] GL_RENDERER: " << glGetString(GL_RENDERER) << std::endl;
 
     return true;
 }

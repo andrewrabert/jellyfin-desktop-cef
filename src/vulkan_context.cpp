@@ -104,7 +104,7 @@ bool VulkanContext::selectPhysicalDevice() {
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physical_device_, &props);
-    std::cout << "Using GPU: " << props.deviceName << std::endl;
+    std::cerr << "Using GPU: " << props.deviceName << std::endl;
 
     return true;
 }
@@ -167,7 +167,7 @@ bool VulkanContext::createCommandPool() {
 }
 
 bool VulkanContext::createSwapchain(int width, int height) {
-    std::cout << "VulkanContext::createSwapchain called" << std::endl;
+    std::cerr << "VulkanContext::createSwapchain called" << std::endl;
     VkSurfaceCapabilitiesKHR caps;
     VkResult caps_result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &caps);
     if (caps_result != VK_SUCCESS) {
@@ -176,7 +176,7 @@ bool VulkanContext::createSwapchain(int width, int height) {
 
     uint32_t format_count = 0;
     VkResult fmt_result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, nullptr);
-    std::cout << "Surface format query: result=" << fmt_result << " count=" << format_count << std::endl;
+    std::cerr << "Surface format query: result=" << fmt_result << " count=" << format_count << std::endl;
     if (format_count == 0) {
         std::cerr << "No surface formats available" << std::endl;
         return false;
@@ -185,9 +185,9 @@ bool VulkanContext::createSwapchain(int width, int height) {
     vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &format_count, formats.data());
 
     // Debug: print available formats
-    std::cout << "Available surface formats:" << std::endl;
+    std::cerr << "Available surface formats:" << std::endl;
     for (const auto& fmt : formats) {
-        std::cout << "  format=" << fmt.format << " colorSpace=" << fmt.colorSpace << std::endl;
+        std::cerr << "  format=" << fmt.format << " colorSpace=" << fmt.colorSpace << std::endl;
     }
 
     // SDR for main window (CEF overlay) - mpv uses separate HDR subsurface
@@ -248,7 +248,7 @@ bool VulkanContext::createSwapchain(int width, int height) {
         vkCreateImageView(device_, &view_info, nullptr, &swapchain_views_[i]);
     }
 
-    std::cout << "Swapchain created: " << swapchain_extent_.width << "x" << swapchain_extent_.height
+    std::cerr << "Swapchain created: " << swapchain_extent_.width << "x" << swapchain_extent_.height
               << " (HDR: " << (is_hdr_ ? "yes" : "no") << ")" << std::endl;
 
     if (is_hdr_) {
@@ -284,7 +284,7 @@ void VulkanContext::setHdrMetadata() {
     hdr_metadata.maxFrameAverageLightLevel = 200.0f;
 
     vkSetHdrMetadataEXT(device_, 1, &swapchain_, &hdr_metadata);
-    std::cout << "HDR metadata set" << std::endl;
+    std::cerr << "HDR metadata set" << std::endl;
 }
 
 bool VulkanContext::recreateSwapchain(int width, int height) {
