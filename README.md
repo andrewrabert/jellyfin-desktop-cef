@@ -1,47 +1,77 @@
 # Jellyfin Desktop CEF
 
-Minimal CEF application with SDL2 and OpenGL.
+Native Jellyfin client using CEF for web UI, mpv/libplacebo for video playback with HDR support.
+
+## Architecture
+
+- **CEF** (Chromium Embedded Framework) - windowless browser for Jellyfin web UI
+- **mpv + libplacebo** - gpu-next backend for video with HDR/tone-mapping
+- **SDL3** - window management and input
+- **Vulkan** - video rendering to Wayland subsurface (Linux) or CAMetalLayer (macOS)
+- **OpenGL/EGL** - CEF overlay compositing
 
 ## Prerequisites
 
-- CMake 3.19+
-- SDL2 development libraries
-- OpenGL development libraries
-- C++17 compiler
+### Linux
 
-## CEF Setup
+- CMake 3.19+
+- C++17 compiler
+- SDL3
+- Vulkan SDK
+- OpenGL + EGL
+- Wayland development libraries (wayland-client, wayland-egl)
+- libdrm
+- meson (for mpv build)
+
+### macOS
+
+- CMake 3.19+
+- C++17 compiler (Xcode)
+- SDL3
+- Vulkan SDK (MoltenVK)
+- meson (for mpv build)
+
+## Setup
+
+### CEF
 
 1. Download CEF binary distribution from https://cef-builds.spotifycdn.com/index.html
    - Choose "Standard Distribution" for your platform
    - Recommended: Latest stable branch
 
-2. Extract to `third_party/cef/`
+2. Extract or symlink to `third_party/cef/`
 
 3. Build the CEF wrapper library:
-   ```bash
+   ```sh
    cd third_party/cef
    cmake -B build
    cmake --build build --target libcef_dll_wrapper
    ```
 
-## Build
+### mpv
 
-```bash
-cmake -B build -DCEF_ROOT=/path/to/cef_binary_xxx
-cmake --build build
+mpv is built from source as a submodule with custom gpu-next patches:
+
+```sh
+git submodule update --init third_party/mpv
 ```
 
-Or if CEF is in `third_party/cef/`:
+The build system handles meson configuration automatically.
 
-```bash
+## Build
+
+```sh
 cmake -B build
 cmake --build build
 ```
 
 ## Run
 
-```bash
-./build/jellyfin-desktop --single-process
+```sh
+./build/jellyfin-desktop
 ```
 
-**Note:** The `--single-process` flag is currently required due to a subprocess issue. This runs CEF in single-process mode which is suitable for development.
+### Options
+
+- `--video <path>` - Load video directly (for testing)
+- `--gpu-overlay` - Enable DMA-BUF shared textures for CEF (experimental)
