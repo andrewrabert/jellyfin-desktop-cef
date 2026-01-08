@@ -34,6 +34,10 @@
 constexpr float FADE_DURATION_SEC = 0.3f;
 constexpr float IDLE_TIMEOUT_SEC = 5.0f;
 
+// Overlay fade constants
+constexpr float OVERLAY_FADE_DELAY_SEC = 1.0f;
+constexpr float OVERLAY_FADE_DURATION_SEC = 0.25f;
+
 // Double/triple click detection
 constexpr int MULTI_CLICK_DISTANCE = 4;
 constexpr Uint64 MULTI_CLICK_TIME = 500;
@@ -171,6 +175,15 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
+
+    // Second compositor for overlay browser
+    OpenGLCompositor overlay_compositor;
+    if (!overlay_compositor.init(&glctx, width, height, false)) {  // Always software for overlay
+        std::cerr << "Overlay compositor init failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
 #else
     // Linux: Initialize EGL context for OpenGL rendering
     EGLContext_ egl;
@@ -210,6 +223,15 @@ int main(int argc, char* argv[]) {
     OpenGLCompositor compositor;
     if (!compositor.init(&egl, width, height, use_gpu_overlay)) {
         std::cerr << "OpenGLCompositor init failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    // Second compositor for overlay browser
+    OpenGLCompositor overlay_compositor;
+    if (!overlay_compositor.init(&egl, width, height, false)) {  // Always software for overlay
+        std::cerr << "Overlay compositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
@@ -288,6 +310,13 @@ int main(int argc, char* argv[]) {
     std::mutex cmd_mutex;
     std::vector<PlayerCmd> pending_cmds;
 
+    // Overlay browser state
+    enum class OverlayState { SHOWING, WAITING, FADING, HIDDEN };
+    OverlayState overlay_state = OverlayState::SHOWING;
+    std::chrono::steady_clock::time_point overlay_fade_start;
+    float overlay_browser_alpha = 1.0f;
+    std::string pending_server_url;
+
     // Context menu overlay
     MenuOverlay menu;
     if (!menu.init()) {
@@ -296,6 +325,23 @@ int main(int argc, char* argv[]) {
 
     // Cursor state
     SDL_Cursor* current_cursor = nullptr;
+
+    // Overlay browser client (for loading UI)
+    CefRefPtr<OverlayClient> overlay_client(new OverlayClient(width, height,
+        [&](const void* buffer, int w, int h) {
+            std::lock_guard<std::mutex> lock(buffer_mutex);
+            void* staging = overlay_compositor.getStagingBuffer(w, h);
+            if (staging) {
+                memcpy(staging, buffer, w * h * 4);
+                overlay_compositor.markStagingDirty();
+            }
+        },
+        [&](const std::string& url) {
+            // loadServer callback - start loading main browser
+            std::lock_guard<std::mutex> lock(cmd_mutex);
+            pending_server_url = url;
+        }
+    ));
 
     CefRefPtr<Client> client(new Client(width, height,
         [&](const void* buffer, int w, int h) {
@@ -353,13 +399,30 @@ int main(int argc, char* argv[]) {
         browser_settings.windowless_frame_rate = 60;
     }
 
-    std::string html_path = "file://" + (exe_path / "resources" / "index.html").string();
-    std::cerr << "Loading: " << html_path << std::endl;
+    // Create overlay browser loading index.html
+    CefWindowInfo overlay_window_info;
+    overlay_window_info.SetAsWindowless(0);
+    CefBrowserSettings overlay_browser_settings;
+    overlay_browser_settings.background_color = 0;
+    overlay_browser_settings.windowless_frame_rate = browser_settings.windowless_frame_rate;
 
-    CefBrowserHost::CreateBrowser(window_info, client, html_path, browser_settings, nullptr, nullptr);
+    std::string overlay_html_path = "file://" + (exe_path / "resources" / "index.html").string();
+    CefBrowserHost::CreateBrowser(overlay_window_info, overlay_client, overlay_html_path, overlay_browser_settings, nullptr, nullptr);
 
     // State tracking
     using Clock = std::chrono::steady_clock;
+
+    // Main browser: load saved server immediately, or about:blank
+    std::string main_url = Settings::instance().serverUrl();
+    if (main_url.empty()) {
+        main_url = "about:blank";
+    } else {
+        // Start fade timer since we're auto-loading saved server
+        overlay_state = OverlayState::WAITING;
+        overlay_fade_start = Clock::now();
+    }
+    std::cerr << "Main browser loading: " << main_url << std::endl;
+    CefBrowserHost::CreateBrowser(window_info, client, main_url, browser_settings, nullptr, nullptr);
     auto last_activity = Clock::now();
     float overlay_alpha = 1.0f;
     int mouse_x = 0, mouse_y = 0;
@@ -394,7 +457,11 @@ int main(int argc, char* argv[]) {
         bool activity_this_frame = false;
 
         if (!focus_set) {
-            client->sendFocus(true);
+            if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                overlay_client->sendFocus(true);
+            } else {
+                client->sendFocus(true);
+            }
             focus_set = true;
         }
 
@@ -444,7 +511,11 @@ int main(int argc, char* argv[]) {
                 if (buttons & SDL_BUTTON_LMASK) mods |= (1 << 5);
                 if (buttons & SDL_BUTTON_MMASK) mods |= (1 << 6);
                 if (buttons & SDL_BUTTON_RMASK) mods |= (1 << 7);
-                client->sendMouseMove(mouse_x, mouse_y, mods);
+                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                    overlay_client->sendMouseMove(mouse_x, mouse_y, mods);
+                } else {
+                    client->sendMouseMove(mouse_x, mouse_y, mods);
+                }
             } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 int x = static_cast<int>(event.button.x);
                 int y = static_cast<int>(event.button.y);
@@ -469,17 +540,39 @@ int main(int argc, char* argv[]) {
                 last_click_y = y;
                 last_click_button = btn;
 
-                client->sendFocus(true);
-                client->sendMouseClick(x, y, true, btn, click_count, mods);
+                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                    overlay_client->sendFocus(true);
+                    overlay_client->sendMouseClick(x, y, true, btn, click_count, mods);
+                } else {
+                    client->sendFocus(true);
+                    client->sendMouseClick(x, y, true, btn, click_count, mods);
+                }
             } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                client->sendMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y),
-                                       false, event.button.button, click_count, mods);
+                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                    overlay_client->sendMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y),
+                                           false, event.button.button, click_count, mods);
+                } else {
+                    client->sendMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y),
+                                           false, event.button.button, click_count, mods);
+                }
             } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                client->sendMouseWheel(mouse_x, mouse_y, event.wheel.x, event.wheel.y, mods);
+                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                    overlay_client->sendMouseWheel(mouse_x, mouse_y, event.wheel.x, event.wheel.y, mods);
+                } else {
+                    client->sendMouseWheel(mouse_x, mouse_y, event.wheel.x, event.wheel.y, mods);
+                }
             } else if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
-                client->sendFocus(true);
+                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                    overlay_client->sendFocus(true);
+                } else {
+                    client->sendFocus(true);
+                }
             } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-                client->sendFocus(false);
+                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                    overlay_client->sendFocus(false);
+                } else {
+                    client->sendFocus(false);
+                }
             } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
                 auto resize_start = std::chrono::steady_clock::now();
                 current_width = event.window.data1;
@@ -489,7 +582,9 @@ int main(int argc, char* argv[]) {
                 // Resize CGL context
                 glctx.resize(current_width, current_height);
                 compositor.resize(current_width, current_height);
+                overlay_compositor.resize(current_width, current_height);
                 client->resize(current_width, current_height);
+                overlay_client->resize(current_width, current_height);
 
                 // Resize video layer
                 if (has_subsurface) {
@@ -499,7 +594,9 @@ int main(int argc, char* argv[]) {
                 // Resize EGL context (handles wl_egl_window resize)
                 egl.resize(current_width, current_height);
                 compositor.resize(current_width, current_height);
+                overlay_compositor.resize(current_width, current_height);
                 client->resize(current_width, current_height);
+                overlay_client->resize(current_width, current_height);
 
                 // Resize subsurface for video
                 if (has_subsurface) {
@@ -523,11 +620,19 @@ int main(int argc, char* argv[]) {
                     key == SDLK_F5 || key == SDLK_F11);
                 bool has_ctrl = (mods & (1 << 2)) != 0;
                 if (is_control_key || has_ctrl) {
-                    client->sendKeyEvent(key, down, mods);
+                    if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                        overlay_client->sendKeyEvent(key, down, mods);
+                    } else {
+                        client->sendKeyEvent(key, down, mods);
+                    }
                 }
             } else if (event.type == SDL_EVENT_TEXT_INPUT) {
                 for (const char* c = event.text.text; *c; ++c) {
-                    client->sendChar(static_cast<unsigned char>(*c), mods);
+                    if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
+                        overlay_client->sendChar(static_cast<unsigned char>(*c), mods);
+                    } else {
+                        client->sendChar(static_cast<unsigned char>(*c), mods);
+                    }
                 }
             }
             have_event = SDL_PollEvent(&event);
@@ -536,9 +641,9 @@ int main(int argc, char* argv[]) {
         // Determine if we need to render this frame
         // With vsync, always render to maintain consistent frame pacing
 #ifdef __APPLE__
-        needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || compositor.hasPendingIOSurface();
+        needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || compositor.hasPendingIOSurface() || overlay_state == OverlayState::FADING;
 #else
-        needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || compositor.hasPendingDmaBuf();
+        needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || compositor.hasPendingDmaBuf() || overlay_state == OverlayState::FADING;
 #endif
 
         if (activity_this_frame) {
@@ -590,6 +695,48 @@ int main(int argc, char* argv[]) {
                 }
             }
             pending_cmds.clear();
+        }
+
+        // Check for pending server URL from overlay
+        {
+            std::lock_guard<std::mutex> lock(cmd_mutex);
+            if (!pending_server_url.empty()) {
+                std::string url = pending_server_url;
+                pending_server_url.clear();
+
+                // Only process if we're still showing the overlay form
+                // (ignore if already loading/fading from saved server)
+                if (overlay_state == OverlayState::SHOWING) {
+                    // Save URL to settings
+                    Settings::instance().setServerUrl(url);
+                    Settings::instance().save();
+
+                    // Load in main browser
+                    client->loadUrl(url);
+
+                    // Start fade timer
+                    overlay_state = OverlayState::WAITING;
+                    overlay_fade_start = now;
+                }
+            }
+        }
+
+        // Update overlay state machine
+        if (overlay_state == OverlayState::WAITING) {
+            auto elapsed = std::chrono::duration<float>(now - overlay_fade_start).count();
+            if (elapsed >= OVERLAY_FADE_DELAY_SEC) {
+                overlay_state = OverlayState::FADING;
+                overlay_fade_start = now;
+            }
+        } else if (overlay_state == OverlayState::FADING) {
+            auto elapsed = std::chrono::duration<float>(now - overlay_fade_start).count();
+            float progress = elapsed / OVERLAY_FADE_DURATION_SEC;
+            if (progress >= 1.0f) {
+                overlay_browser_alpha = 0.0f;
+                overlay_state = OverlayState::HIDDEN;
+            } else {
+                overlay_browser_alpha = 1.0f - progress;
+            }
         }
 
         // Calculate fade
@@ -662,10 +809,18 @@ int main(int argc, char* argv[]) {
         glClearColor(0.0f, 0.0f, 0.0f, bg_alpha);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // Composite CEF overlay (skip when using --video for HDR testing)
+        // Composite main browser (always full opacity when no video)
         if (test_video.empty() && compositor.hasValidOverlay()) {
             float alpha = video_ready ? overlay_alpha : 1.0f;
             compositor.composite(current_width, current_height, alpha);
+        }
+
+        // Composite overlay browser (with fade alpha)
+        if (overlay_state != OverlayState::HIDDEN && overlay_browser_alpha > 0.01f) {
+            overlay_compositor.flushOverlay();
+            if (overlay_compositor.hasValidOverlay()) {
+                overlay_compositor.composite(current_width, current_height, overlay_browser_alpha);
+            }
         }
 
         // Swap buffers
@@ -679,6 +834,7 @@ int main(int argc, char* argv[]) {
     // Cleanup
     mpv.cleanup();
     compositor.cleanup();
+    overlay_compositor.cleanup();
 #ifdef __APPLE__
     if (has_subsurface) {
         videoLayer.cleanup();

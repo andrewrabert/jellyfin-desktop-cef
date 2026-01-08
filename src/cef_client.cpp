@@ -348,6 +348,12 @@ void Client::resize(int width, int height) {
     }
 }
 
+void Client::loadUrl(const std::string& url) {
+    if (browser_) {
+        browser_->GetMainFrame()->LoadURL(url);
+    }
+}
+
 void Client::executeJS(const std::string& code) {
     if (!browser_) return;
     CefRefPtr<CefFrame> frame = browser_->GetMainFrame();
@@ -416,4 +422,143 @@ bool Client::RunContextMenu(CefRefPtr<CefBrowser> browser,
     std::cerr << "[ContextMenu] Opening menu with " << items.size() << " items" << std::endl;
     menu_->open(params->GetXCoord(), params->GetYCoord(), items, callback);
     return true;
+}
+
+// OverlayClient implementation
+OverlayClient::OverlayClient(int width, int height, PaintCallback on_paint, LoadServerCallback on_load_server)
+    : width_(width), height_(height), on_paint_(std::move(on_paint)), on_load_server_(std::move(on_load_server)) {}
+
+bool OverlayClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
+                                      cef_log_severity_t level,
+                                      const CefString& message,
+                                      const CefString& source,
+                                      int line) {
+    std::string levelStr;
+    switch (level) {
+        case LOGSEVERITY_DEBUG: levelStr = "DEBUG"; break;
+        case LOGSEVERITY_INFO: levelStr = "INFO"; break;
+        case LOGSEVERITY_WARNING: levelStr = "WARN"; break;
+        case LOGSEVERITY_ERROR: levelStr = "ERROR"; break;
+        default: levelStr = "LOG"; break;
+    }
+    std::cerr << "[Overlay:" << levelStr << "] " << message.ToString() << std::endl;
+    return false;
+}
+
+bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
+                                              CefRefPtr<CefFrame> frame,
+                                              CefProcessId source_process,
+                                              CefRefPtr<CefProcessMessage> message) {
+    std::string name = message->GetName().ToString();
+    CefRefPtr<CefListValue> args = message->GetArgumentList();
+
+    std::cerr << "[Overlay IPC] Received: " << name << std::endl;
+
+    if (name == "loadServer" && on_load_server_) {
+        std::string url = args->GetString(0).ToString();
+        on_load_server_(url);
+        return true;
+    }
+
+    return false;
+}
+
+void OverlayClient::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
+    rect.Set(0, 0, width_, height_);
+}
+
+void OverlayClient::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
+                             const RectList& dirtyRects, const void* buffer,
+                             int width, int height) {
+    if (on_paint_ && type == PET_VIEW) {
+        on_paint_(buffer, width, height);
+    }
+}
+
+void OverlayClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
+    browser_ = browser;
+    std::cerr << "Overlay browser created" << std::endl;
+}
+
+void OverlayClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
+    std::cerr << "Overlay browser closing" << std::endl;
+    browser_ = nullptr;
+    is_closed_ = true;
+}
+
+void OverlayClient::resize(int width, int height) {
+    width_ = width;
+    height_ = height;
+    if (browser_) {
+        browser_->GetHost()->WasResized();
+    }
+}
+
+void OverlayClient::sendFocus(bool focused) {
+    if (browser_) browser_->GetHost()->SetFocus(focused);
+}
+
+void OverlayClient::sendMouseMove(int x, int y, int modifiers) {
+    if (!browser_) return;
+    CefMouseEvent event;
+    event.x = x;
+    event.y = y;
+    event.modifiers = modifiers;
+    browser_->GetHost()->SendMouseMoveEvent(event, false);
+}
+
+void OverlayClient::sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) {
+    if (!browser_) return;
+    CefMouseEvent event;
+    event.x = x;
+    event.y = y;
+
+    CefBrowserHost::MouseButtonType btn_type;
+    switch (button) {
+        case 1: btn_type = MBT_LEFT; if (down) modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON; break;
+        case 2: btn_type = MBT_MIDDLE; if (down) modifiers |= EVENTFLAG_MIDDLE_MOUSE_BUTTON; break;
+        case 3: btn_type = MBT_RIGHT; if (down) modifiers |= EVENTFLAG_RIGHT_MOUSE_BUTTON; break;
+        default: btn_type = MBT_LEFT; if (down) modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON; break;
+    }
+    event.modifiers = modifiers;
+    browser_->GetHost()->SendMouseClickEvent(event, btn_type, !down, clickCount);
+}
+
+void OverlayClient::sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) {
+    if (!browser_) return;
+    CefMouseEvent event;
+    event.x = x;
+    event.y = y;
+    event.modifiers = modifiers;
+    int pixelX = static_cast<int>(deltaX * 53.0f);
+    int pixelY = static_cast<int>(deltaY * 53.0f);
+    browser_->GetHost()->SendMouseWheelEvent(event, pixelX, pixelY);
+}
+
+void OverlayClient::sendKeyEvent(int key, bool down, int modifiers) {
+    if (!browser_) return;
+    CefKeyEvent event;
+    event.windows_key_code = sdlKeyToWindows(key);
+    event.native_key_code = key;
+    event.modifiers = modifiers;
+    event.type = down ? KEYEVENT_KEYDOWN : KEYEVENT_KEYUP;
+    browser_->GetHost()->SendKeyEvent(event);
+
+    if (down && key == 0x0D) {
+        event.type = KEYEVENT_CHAR;
+        event.character = '\r';
+        event.unmodified_character = '\r';
+        browser_->GetHost()->SendKeyEvent(event);
+    }
+}
+
+void OverlayClient::sendChar(int charCode, int modifiers) {
+    if (!browser_) return;
+    CefKeyEvent event;
+    event.windows_key_code = charCode;
+    event.character = charCode;
+    event.unmodified_character = charCode;
+    event.type = KEYEVENT_CHAR;
+    event.modifiers = modifiers;
+    browser_->GetHost()->SendKeyEvent(event);
 }

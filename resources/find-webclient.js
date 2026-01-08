@@ -22,13 +22,13 @@ async function tryConnect(server, spinnerStartTime = Date.now()) {
             await new Promise(r => setTimeout(r, 1000 - elapsed));
         }
 
-        // Fade out page before navigating
-        document.body.classList.add('fade-out');
-        await new Promise(r => setTimeout(r, 250));
-
-        // Navigation will clean up handlers, but do it explicitly
-        window.location = resolvedUrl;
-
+        // Tell native to load this server in main browser
+        if (window.jmpNative && window.jmpNative.loadServer) {
+            window.jmpNative.loadServer(resolvedUrl);
+        } else {
+            console.error("loadServer IPC not available");
+            return false;
+        }
         return true;
     } catch (e) {
         console.error("Server connectivity check failed:", e);

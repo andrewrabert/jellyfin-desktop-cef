@@ -115,6 +115,7 @@ public:
     void sendChar(int charCode, int modifiers);
     void sendFocus(bool focused);
     void resize(int width, int height);
+    void loadUrl(const std::string& url);
 
     // Execute JavaScript in the browser
     void executeJS(const std::string& code);
@@ -150,4 +151,58 @@ private:
 
     IMPLEMENT_REFCOUNTING(Client);
     DISALLOW_COPY_AND_ASSIGN(Client);
+};
+
+// Simplified client for overlay browser (no player, no menu)
+class OverlayClient : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler {
+public:
+    using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
+    using LoadServerCallback = std::function<void(const std::string& url)>;
+
+    OverlayClient(int width, int height, PaintCallback on_paint, LoadServerCallback on_load_server);
+
+    CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
+    CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+    CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+    bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
+                                   CefRefPtr<CefFrame> frame,
+                                   CefProcessId source_process,
+                                   CefRefPtr<CefProcessMessage> message) override;
+
+    // CefDisplayHandler
+    bool OnConsoleMessage(CefRefPtr<CefBrowser> browser,
+                          cef_log_severity_t level,
+                          const CefString& message,
+                          const CefString& source,
+                          int line) override;
+
+    // CefRenderHandler
+    void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
+    void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
+                 const RectList& dirtyRects, const void* buffer,
+                 int width, int height) override;
+
+    // CefLifeSpanHandler
+    void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
+    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
+
+    bool isClosed() const { return is_closed_; }
+    void resize(int width, int height);
+    void sendFocus(bool focused);
+    void sendMouseMove(int x, int y, int modifiers);
+    void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers);
+    void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers);
+    void sendKeyEvent(int key, bool down, int modifiers);
+    void sendChar(int charCode, int modifiers);
+
+private:
+    int width_;
+    int height_;
+    PaintCallback on_paint_;
+    LoadServerCallback on_load_server_;
+    std::atomic<bool> is_closed_ = false;
+    CefRefPtr<CefBrowser> browser_;
+
+    IMPLEMENT_REFCOUNTING(OverlayClient);
+    DISALLOW_COPY_AND_ASSIGN(OverlayClient);
 };

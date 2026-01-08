@@ -84,6 +84,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     jmpNative->SetValue("playerSetMuted", CefV8Value::CreateFunction("playerSetMuted", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("saveServerUrl", CefV8Value::CreateFunction("saveServerUrl", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("setFullscreen", CefV8Value::CreateFunction("setFullscreen", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("loadServer", CefV8Value::CreateFunction("loadServer", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     window->SetValue("jmpNative", jmpNative, V8_PROPERTY_ATTRIBUTE_READONLY);
 
     // Inject the JavaScript shim that creates window.api, window.NativeShell, etc.
@@ -837,6 +838,17 @@ bool NativeV8Handler::Execute(const CefString& name,
         CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("setFullscreen");
         msg->GetArgumentList()->SetBool(0, enable);
         browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        return true;
+    }
+
+    if (name == "loadServer") {
+        if (arguments.size() >= 1 && arguments[0]->IsString()) {
+            std::string url = arguments[0]->GetStringValue().ToString();
+            std::cerr << "[V8] loadServer: " << url << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("loadServer");
+            msg->GetArgumentList()->SetString(0, url);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
         return true;
     }
 
