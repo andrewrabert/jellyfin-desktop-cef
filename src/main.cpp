@@ -370,6 +370,7 @@ int main(int argc, char* argv[]) {
     bool focus_set = false;
     int current_width = width;
     int current_height = height;
+    bool video_ready = false;  // Latches true once first frame renders
 
     // Auto-load test video if provided via --video
     if (!test_video.empty()) {
@@ -568,6 +569,7 @@ int main(int argc, char* argv[]) {
                 } else if (cmd.cmd == "stop") {
                     mpv.stop();
                     has_video = false;
+                    video_ready = false;
                     client->emitFinished();
                 } else if (cmd.cmd == "pause") {
                     mpv.pause();
@@ -627,6 +629,7 @@ int main(int argc, char* argv[]) {
                           videoLayer.width(), videoLayer.height(),
                           sub_format);
                 videoLayer.submitFrame();
+                video_ready = true;
             }
         }
 
@@ -642,6 +645,7 @@ int main(int argc, char* argv[]) {
                           subsurface.width(), subsurface.height(),
                           sub_format);
                 subsurface.submitFrame();
+                video_ready = true;
             }
         }
 
@@ -652,14 +656,14 @@ int main(int argc, char* argv[]) {
         // Flush pending overlay data to GPU texture (software path)
         compositor.flushOverlay();
 
-        // Clear main surface (transparent when video playing, black otherwise)
-        float bg_alpha = (has_video && has_subsurface) ? 0.0f : 1.0f;
+        // Clear main surface (transparent when video ready, black otherwise)
+        float bg_alpha = video_ready ? 0.0f : 1.0f;
         glClearColor(0.0f, 0.0f, 0.0f, bg_alpha);
         glClear(GL_COLOR_BUFFER_BIT);
 
         // Composite CEF overlay (skip when using --video for HDR testing)
         if (test_video.empty() && compositor.hasValidOverlay()) {
-            float alpha = has_video ? overlay_alpha : 1.0f;
+            float alpha = video_ready ? overlay_alpha : 1.0f;
             compositor.composite(current_width, current_height, alpha);
         }
 
