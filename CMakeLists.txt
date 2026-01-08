@@ -62,11 +62,38 @@ else()
     pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
     pkg_check_modules(LIBDRM REQUIRED libdrm)
     pkg_check_modules(WAYLAND REQUIRED wayland-client)
+    pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
+
+    # Find wayland-scanner
+    find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+    pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+
+    # Generate Wayland protocol sources
+    set(WAYLAND_GENERATED_DIR "${CMAKE_BINARY_DIR}/wayland-protocols")
+    file(MAKE_DIRECTORY ${WAYLAND_GENERATED_DIR})
+
+    set(COLOR_MGMT_PROTOCOL "${WAYLAND_PROTOCOLS_DIR}/staging/color-management/color-management-v1.xml")
+    set(COLOR_MGMT_CLIENT_H "${WAYLAND_GENERATED_DIR}/color-management-v1-client.h")
+    set(COLOR_MGMT_CODE_C "${WAYLAND_GENERATED_DIR}/color-management-v1-code.c")
+
+    add_custom_command(
+        OUTPUT ${COLOR_MGMT_CLIENT_H}
+        COMMAND ${WAYLAND_SCANNER} client-header ${COLOR_MGMT_PROTOCOL} ${COLOR_MGMT_CLIENT_H}
+        DEPENDS ${COLOR_MGMT_PROTOCOL}
+        COMMENT "Generating color-management-v1 client header"
+    )
+    add_custom_command(
+        OUTPUT ${COLOR_MGMT_CODE_C}
+        COMMAND ${WAYLAND_SCANNER} private-code ${COLOR_MGMT_PROTOCOL} ${COLOR_MGMT_CODE_C}
+        DEPENDS ${COLOR_MGMT_PROTOCOL}
+        COMMENT "Generating color-management-v1 code"
+    )
 
     set(PLATFORM_SOURCES
         src/egl_context.cpp
         src/wayland_subsurface.cpp
-        src/wayland-protocols/color-management-v1-code.c
+        ${COLOR_MGMT_CODE_C}
+        ${COLOR_MGMT_CLIENT_H}
     )
     set(PLATFORM_LIBRARIES
         ${WAYLAND_LIBRARIES}
@@ -78,6 +105,7 @@ else()
         ${WAYLAND_INCLUDE_DIRS}
         ${WAYLAND_EGL_INCLUDE_DIRS}
         ${LIBDRM_INCLUDE_DIRS}
+        ${CMAKE_BINARY_DIR}
     )
 endif()
 

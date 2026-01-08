@@ -19,7 +19,8 @@ Native Jellyfin client using CEF for web UI, mpv/libplacebo for video playback w
 - SDL3
 - Vulkan SDK
 - OpenGL + EGL
-- Wayland development libraries (wayland-client, wayland-egl)
+- Wayland development libraries (wayland-client, wayland-egl, wayland-protocols)
+- wayland-scanner
 - libdrm
 - meson (for mpv build)
 
