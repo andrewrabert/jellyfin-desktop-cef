@@ -109,6 +109,7 @@ add_custom_target(mpv_build
     COMMAND meson compile -C build
     WORKING_DIRECTORY ${MPV_SOURCE_DIR}
     COMMENT "Building mpv (meson handles incremental builds)"
+    BYPRODUCTS ${MPV_LIBRARY}
 )
 
 set(MPV_INCLUDE_DIRS "${MPV_SOURCE_DIR}/include")
