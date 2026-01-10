@@ -18,6 +18,11 @@ struct mpv_render_context;
 class MpvPlayerVk {
 public:
     using RedrawCallback = std::function<void()>;
+    // Event callbacks (like Qt signals)
+    using PositionCallback = std::function<void(double ms)>;
+    using DurationCallback = std::function<void(double ms)>;
+    using StateCallback = std::function<void(bool paused)>;
+    using PlaybackCallback = std::function<void()>;  // playing, finished, error
 
     MpvPlayerVk();
     ~MpvPlayerVk();
@@ -25,6 +30,9 @@ public:
     bool init(VulkanContext* vk, VideoSurface* subsurface = nullptr);
     void cleanup();
     bool loadFile(const std::string& path, double startSeconds = 0.0);
+
+    // Process pending mpv events (call from main loop)
+    void processEvents();
 
     // Check if mpv has a new frame ready to render
     bool hasFrame() const;
@@ -50,11 +58,20 @@ public:
     bool needsRedraw() const { return needs_redraw_.load(); }
     void clearRedrawFlag() { needs_redraw_ = false; }
 
+    // Event callbacks (set these to receive mpv events)
+    void setPositionCallback(PositionCallback cb) { on_position_ = cb; }
+    void setDurationCallback(DurationCallback cb) { on_duration_ = cb; }
+    void setStateCallback(StateCallback cb) { on_state_ = cb; }
+    void setPlayingCallback(PlaybackCallback cb) { on_playing_ = cb; }
+    void setFinishedCallback(PlaybackCallback cb) { on_finished_ = cb; }
+
     bool isHdr() const { return subsurface_ && subsurface_->isHdr(); }
     VideoSurface* subsurface() const { return subsurface_; }
 
 private:
     static void onMpvRedraw(void* ctx);
+    static void onMpvWakeup(void* ctx);
+    void handleMpvEvent(struct mpv_event* event);
 
     VulkanContext* vk_ = nullptr;
     VideoSurface* subsurface_ = nullptr;
@@ -62,6 +79,14 @@ private:
     mpv_render_context* render_ctx_ = nullptr;
 
     RedrawCallback redraw_callback_;
+    PositionCallback on_position_;
+    DurationCallback on_duration_;
+    StateCallback on_state_;
+    PlaybackCallback on_playing_;
+    PlaybackCallback on_finished_;
+
     std::atomic<bool> needs_redraw_{false};
+    std::atomic<bool> has_events_{false};
     bool playing_ = false;
+    double last_position_ = 0.0;
 };

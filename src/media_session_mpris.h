@@ -1,0 +1,47 @@
+#pragma once
+
+#include "media_session.h"
+#include <systemd/sd-bus.h>
+
+class MprisBackend : public MediaSessionBackend {
+public:
+    explicit MprisBackend(MediaSession* session);
+    ~MprisBackend() override;
+
+    void setMetadata(const MediaMetadata& meta) override;
+    void setArtwork(const std::string& dataUri) override;
+    void setPlaybackState(PlaybackState state) override;
+    void setPosition(int64_t position_us) override;
+    void setVolume(double volume) override;
+    void setCanGoNext(bool can) override;
+    void setCanGoPrevious(bool can) override;
+    void emitSeeked(int64_t position_us) override;  // Emit Seeked signal when user seeks
+    void update() override;
+    int getFd() override;
+
+    // Property getters (called from D-Bus vtable)
+    const char* getPlaybackStatus() const;
+    int64_t getPosition() const { return position_us_; }
+    double getVolume() const { return volume_; }
+    bool canGoNext() const { return can_go_next_; }
+    bool canGoPrevious() const { return can_go_previous_; }
+    const MediaMetadata& getMetadata() const { return metadata_; }
+    MediaSession* session() { return session_; }
+
+private:
+    void emitPropertiesChanged(const char* interface, const char* property);
+
+    MediaSession* session_;
+    sd_bus* bus_ = nullptr;
+    sd_bus_slot* slot_root_ = nullptr;
+    sd_bus_slot* slot_player_ = nullptr;
+
+    MediaMetadata metadata_;
+    PlaybackState state_ = PlaybackState::Stopped;
+    int64_t position_us_ = 0;
+    double volume_ = 1.0;
+    bool can_go_next_ = false;
+    bool can_go_previous_ = false;
+};
+
+std::unique_ptr<MediaSessionBackend> createMprisBackend(MediaSession* session);

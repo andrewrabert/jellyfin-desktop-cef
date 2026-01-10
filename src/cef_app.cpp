@@ -100,6 +100,12 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     jmpNative->SetValue("saveServerUrl", CefV8Value::CreateFunction("saveServerUrl", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("setFullscreen", CefV8Value::CreateFunction("setFullscreen", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("loadServer", CefV8Value::CreateFunction("loadServer", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("notifyMetadata", CefV8Value::CreateFunction("notifyMetadata", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("notifyPosition", CefV8Value::CreateFunction("notifyPosition", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("notifySeek", CefV8Value::CreateFunction("notifySeek", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("notifyPlaybackState", CefV8Value::CreateFunction("notifyPlaybackState", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("notifyArtwork", CefV8Value::CreateFunction("notifyArtwork", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("notifyQueueChange", CefV8Value::CreateFunction("notifyQueueChange", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     window->SetValue("jmpNative", jmpNative, V8_PROPERTY_ATTRIBUTE_READONLY);
 
     // Inject the JavaScript shim that creates window.api, window.NativeShell, etc.
@@ -218,7 +224,8 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                     this.error.connect(onError);
                 }
                 if (window.jmpNative && window.jmpNative.playerLoad) {
-                    window.jmpNative.playerLoad(url, options?.startMilliseconds || 0, audioStream || -1, subtitleStream || -1);
+                    const metadataJson = streamdata?.metadata ? JSON.stringify(streamdata.metadata) : '{}';
+                    window.jmpNative.playerLoad(url, options?.startMilliseconds || 0, audioStream || -1, subtitleStream || -1, metadataJson);
                 }
             },
             stop() {
@@ -296,6 +303,11 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             groupUpdate: createSignal('groupUpdate')
         },
         input: {
+            // Signals for MPRIS control commands
+            hostInput: createSignal('hostInput'),
+            positionSeek: createSignal('positionSeek'),
+            volumeChanged: createSignal('volumeChanged'),
+
             executeActions(actions) {
                 console.log('[Native] executeActions:', actions);
                 for (const action of actions) {
@@ -330,9 +342,18 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
         playerState.duration = ms;
         window.api.player.updateDuration(ms);
     };
+    // Native emitters for MPRIS control commands
+    window._nativeHostInput = function(actions) {
+        console.log('[Native] _nativeHostInput:', actions);
+        window.api.input.hostInput(actions);
+    };
+    window._nativeSeek = function(positionMs) {
+        console.log('[Native] _nativeSeek:', positionMs);
+        window.api.input.positionSeek(positionMs);
+    };
 
     // window.NativeShell - app info and plugins
-    const plugins = ['mpvVideoPlayer', 'mpvAudioPlayer'];
+    const plugins = ['mpvVideoPlayer', 'mpvAudioPlayer', 'inputPlugin'];
     for (const plugin of plugins) {
         window[plugin] = () => window['_' + plugin];
     }
@@ -476,7 +497,13 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             this._playRate = 1;
             this._hasConnection = false;
 
-            this.onEnded = () => this.onEndedInternal();
+            this._endedPending = false;
+            this.onEnded = () => {
+                if (!this._endedPending) {
+                    this._endedPending = true;
+                    this.onEndedInternal();
+                }
+            };
             this.onTimeUpdate = (time) => {
                 if (time && !this._timeUpdated) this._timeUpdated = true;
                 this._currentTime = time;
@@ -524,6 +551,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             this._started = false;
             this._timeUpdated = false;
             this._currentTime = null;
+            this._endedPending = false;  // Reset for new playback
             if (options.fullscreen) this.loading.show();
             await this.createMediaElement(options);
             console.log('[MPV] createMediaElement done, calling setCurrentSrc');
@@ -542,6 +570,8 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
                 const ms = (options.playerStartPositionTicks || 0) / 10000;
                 this._currentPlayOptions = options;
+                // Set initial position immediately so playbackstart has correct value
+                this._currentTime = ms;
 
                 const audioIdx = options.mediaSource.DefaultAudioStreamIndex ?? -1;
                 const subIdx = options.mediaSource.DefaultSubtitleStreamIndex ?? -1;
@@ -584,7 +614,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
         stop(destroyPlayer) {
             window.api.player.stop();
-            this.onEndedInternal();
+            this.onEnded();  // Use guarded version to prevent double-fire
             if (destroyPlayer) this.destroy();
             return Promise.resolve();
         }
@@ -747,6 +777,375 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 )JS";
 
     frame->ExecuteJavaScript(mpv_audio_player, frame->GetURL(), 0);
+
+    // Input plugin for MPRIS notifications (receives playbackManager from jellyfin-web)
+    const char* input_plugin = R"JS(
+(function() {
+    class inputPlugin {
+        constructor({ playbackManager, inputManager }) {
+            this.name = 'Input Plugin';
+            this.type = 'input';
+            this.id = 'inputPlugin';
+            this.playbackManager = playbackManager;
+            this.inputManager = inputManager;
+            this.positionInterval = null;
+            this.artworkAbortController = null;  // For cancelling in-flight artwork requests
+            this.pendingArtworkUrl = null;       // Track pending request to avoid duplicates
+            this.attachedPlayer = null;          // Currently attached player for event cleanup
+
+            console.log('[MPRIS] inputPlugin constructed with playbackManager:', !!playbackManager);
+
+            if (playbackManager && window.Events) {
+                this.setupEvents(playbackManager);
+            }
+        }
+
+        notifyMetadata(item) {
+            if (!item || !window.jmpNative) return;
+            const meta = {
+                Name: item.Name || '',
+                Type: item.Type || '',
+                MediaType: item.MediaType || '',
+                SeriesName: item.SeriesName || '',
+                SeasonName: item.SeasonName || '',
+                Album: item.Album || '',
+                Artists: item.Artists || [],
+                IndexNumber: item.IndexNumber || 0,
+                RunTimeTicks: item.RunTimeTicks || 0,
+                Id: item.Id || ''
+            };
+            console.log('[MPRIS] notifyMetadata:', meta.Name);
+            window.jmpNative.notifyMetadata(JSON.stringify(meta));
+
+            // Fetch album art and send as data URI
+            this.fetchAlbumArt(item);
+        }
+
+        // Build image URL with fallback logic matching jellyfin-desktop
+        getImageUrl(item, baseUrl) {
+            const imageTags = item.ImageTags || {};
+            const itemType = item.Type || '';
+            const mediaType = item.MediaType || '';
+
+            // Episode: Series primary -> Season primary -> Episode primary
+            if (itemType === 'Episode') {
+                if (item.SeriesId && item.SeriesPrimaryImageTag) {
+                    return baseUrl + '/Items/' + item.SeriesId + '/Images/Primary?tag=' + item.SeriesPrimaryImageTag + '&maxWidth=512';
+                }
+                if (item.SeasonId && item.SeasonPrimaryImageTag) {
+                    return baseUrl + '/Items/' + item.SeasonId + '/Images/Primary?tag=' + item.SeasonPrimaryImageTag + '&maxWidth=512';
+                }
+            }
+
+            // Audio: Album primary -> Item primary
+            if (mediaType === 'Audio' || itemType === 'Audio') {
+                if (item.AlbumId && item.AlbumPrimaryImageTag) {
+                    return baseUrl + '/Items/' + item.AlbumId + '/Images/Primary?tag=' + item.AlbumPrimaryImageTag + '&maxWidth=512';
+                }
+            }
+
+            // Movie/Video: Primary -> Backdrop
+            if (imageTags.Primary && item.Id) {
+                return baseUrl + '/Items/' + item.Id + '/Images/Primary?tag=' + imageTags.Primary + '&maxWidth=512';
+            }
+            if (item.BackdropImageTags && item.BackdropImageTags.length > 0 && item.Id) {
+                return baseUrl + '/Items/' + item.Id + '/Images/Backdrop/0?tag=' + item.BackdropImageTags[0] + '&maxWidth=512';
+            }
+
+            return null;
+        }
+
+        fetchAlbumArt(item) {
+            if (!item || !window.jmpNative) return;
+
+            // Cancel any in-flight request
+            if (this.artworkAbortController) {
+                this.artworkAbortController.abort();
+                this.artworkAbortController = null;
+            }
+
+            // Get server base URL from ApiClient
+            let baseUrl = '';
+            if (window.ApiClient && window.ApiClient.serverAddress) {
+                baseUrl = window.ApiClient.serverAddress();
+            }
+            if (!baseUrl) return;
+
+            const imageUrl = this.getImageUrl(item, baseUrl);
+            if (!imageUrl) {
+                console.log('[MPRIS] No album art URL found');
+                return;
+            }
+
+            // Skip if same URL is already pending
+            if (imageUrl === this.pendingArtworkUrl) {
+                console.log('[MPRIS] Album art already pending for:', imageUrl);
+                return;
+            }
+
+            this.pendingArtworkUrl = imageUrl;
+            this.artworkAbortController = new AbortController();
+            const signal = this.artworkAbortController.signal;
+
+            console.log('[MPRIS] Fetching album art:', imageUrl);
+
+            fetch(imageUrl, { signal })
+                .then(response => {
+                    if (!response.ok) throw new Error('Failed to fetch image');
+                    return response.blob();
+                })
+                .then(blob => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        if (signal.aborted) return;
+                        const dataUri = reader.result;
+                        console.log('[MPRIS] Album art fetched, sending data URI');
+                        window.jmpNative.notifyArtwork(dataUri);
+                        this.pendingArtworkUrl = null;
+                    };
+                    reader.readAsDataURL(blob);
+                })
+                .catch(err => {
+                    if (err.name === 'AbortError') {
+                        console.log('[MPRIS] Album art fetch aborted');
+                    } else {
+                        console.log('[MPRIS] Album art fetch failed:', err.message);
+                    }
+                    this.pendingArtworkUrl = null;
+                });
+        }
+
+        startPositionUpdates() {
+            if (this.positionInterval) clearInterval(this.positionInterval);
+            const pm = this.playbackManager;
+            const self = this;
+
+            // Report initial position
+            const initialPos = pm.currentTime ? pm.currentTime() : 0;
+            if (typeof initialPos === 'number' && initialPos >= 0) {
+                window.jmpNative.notifyPosition(Math.floor(initialPos));
+                this.lastReportedPosition = initialPos;
+            }
+
+            // Poll position like jellyfin-desktop (500ms interval)
+            this.positionInterval = setInterval(() => {
+                if (!window.jmpNative || !pm) return;
+                try {
+                    const positionMs = pm.currentTime ? pm.currentTime() : 0;
+                    if (typeof positionMs !== 'number' || positionMs < 0) return;
+
+                    const positionDiff = Math.abs(positionMs - (self.lastReportedPosition || 0));
+                    if (self.lastReportedPosition > 0 && positionDiff > 2000) {
+                        // Seek detected - notify seek (MPRIS will handle rate)
+                        window.jmpNative.notifySeek(Math.floor(positionMs));
+                    } else if (positionDiff > 100) {
+                        // Normal position update
+                        window.jmpNative.notifyPosition(Math.floor(positionMs));
+                    }
+                    self.lastReportedPosition = positionMs;
+                } catch (e) {}
+            }, 500);
+        }
+
+        stopPositionUpdates() {
+            if (this.positionInterval) {
+                clearInterval(this.positionInterval);
+                this.positionInterval = null;
+            }
+            this.lastReportedPosition = 0;
+        }
+
+        updateQueueState() {
+            try {
+                if (!window.jmpNative) return;
+
+                const pm = this.playbackManager;
+                if (!pm) return;
+
+                const qm = pm._playQueueManager;
+                const playlist = qm?.getPlaylist();
+                const currentIndex = qm?.getCurrentPlaylistIndex();
+
+                // Only update if we have valid queue data - don't overwrite good values with bad
+                if (!playlist || !Array.isArray(playlist) || playlist.length === 0 ||
+                    currentIndex === undefined || currentIndex === null || currentIndex < 0) {
+                    console.log('[MPRIS] updateQueueState: queue invalid (idx=' + currentIndex + ' len=' + (playlist?.length || 0) + '), keeping last state');
+                    return;
+                }
+
+                const canNext = currentIndex < playlist.length - 1;
+
+                const state = pm.getPlayerState ? pm.getPlayerState() : null;
+                const isMusic = state?.NowPlayingItem?.MediaType === 'Audio';
+                const canPrev = isMusic ? true : (currentIndex > 0);
+
+                console.log('[MPRIS] updateQueueState: idx=' + currentIndex + ' len=' + playlist.length + ' canNext=' + canNext + ' canPrev=' + canPrev);
+                window.jmpNative.notifyQueueChange(canNext, canPrev);
+            } catch (e) {
+                console.error('[MPRIS] updateQueueState error:', e);
+            }
+        }
+
+        setupEvents(pm) {
+            console.log('[MPRIS] Setting up playbackManager events');
+            const self = this;
+
+            // Outgoing: playbackManager events -> MPRIS
+            // playbackstart fires when a new playback session begins
+            window.Events.on(pm, 'playbackstart', (e, player) => {
+                console.log('[MPRIS] playbackstart event, player:', !!player);
+
+                // Get state from playbackManager (not passed as argument)
+                const state = pm.getPlayerState ? pm.getPlayerState() : null;
+
+                // Send metadata
+                if (state && state.NowPlayingItem) {
+                    self.notifyMetadata(state.NowPlayingItem);
+                }
+
+                // Report initial position immediately (like jellyfin-desktop)
+                const initialPos = pm.currentTime ? pm.currentTime() : 0;
+                if (initialPos !== undefined && initialPos !== null) {
+                    console.log('[MPRIS] Initial position:', initialPos);
+                    window.jmpNative.notifyPosition(Math.floor(initialPos));
+                    self.lastReportedPosition = initialPos;
+                }
+
+                // 'playing' event fires BEFORE playbackstart, so send Playing state now
+                // and start position updates
+                console.log('[MPRIS] Sending Playing state from playbackstart');
+                if (window.jmpNative) window.jmpNative.notifyPlaybackState('Playing');
+                self.startPositionUpdates();
+                self.updateQueueState();
+
+                // Attach per-player events for pause/resume
+                if (player && player !== self.attachedPlayer) {
+                    // Detach from old player
+                    if (self.attachedPlayer) {
+                        window.Events.off(self.attachedPlayer, 'playing');
+                        window.Events.off(self.attachedPlayer, 'pause');
+                    }
+                    self.attachedPlayer = player;
+
+                    // 'playing' fires on resume from pause and after track change
+                    window.Events.on(player, 'playing', () => {
+                        console.log('[MPRIS] player.playing event');
+                        if (window.jmpNative) window.jmpNative.notifyPlaybackState('Playing');
+                        self.updateQueueState();
+
+                        // Report position when playback starts/resumes (like jellyfin-desktop)
+                        const pos = pm.currentTime ? pm.currentTime() : 0;
+                        if (pos !== undefined && pos !== null) {
+                            window.jmpNative.notifyPosition(Math.floor(pos));
+                            self.lastReportedPosition = pos;
+                        }
+                    });
+
+                    // 'pause' fires when playback pauses
+                    window.Events.on(player, 'pause', () => {
+                        console.log('[MPRIS] player.pause event');
+                        if (window.jmpNative) window.jmpNative.notifyPlaybackState('Paused');
+                    });
+                }
+            });
+
+            // Global playbackstop fires when user exits player or playback ends
+            window.Events.on(pm, 'playbackstop', (e, stopInfo) => {
+                console.log('[MPRIS] playbackstop event, stopInfo:', JSON.stringify(stopInfo));
+                self.stopPositionUpdates();
+
+                // Check if navigating to next item or truly stopping
+                const isNavigating = !!(stopInfo && stopInfo.nextMediaType);
+                if (!isNavigating) {
+                    // Truly stopped - clear metadata and state
+                    console.log('[MPRIS] Playback truly stopped, clearing state');
+                    if (window.jmpNative) window.jmpNative.notifyPlaybackState('Stopped');
+                } else {
+                    console.log('[MPRIS] Navigating to next item, keeping metadata');
+                }
+                // Only update queue state after we know if we're stopping or navigating
+                self.updateQueueState();
+            });
+
+            // Queue change events
+            window.Events.on(pm, 'playlistitemremove', () => self.updateQueueState());
+            window.Events.on(pm, 'playlistitemadd', () => self.updateQueueState());
+            window.Events.on(pm, 'playlistitemchange', () => self.updateQueueState());
+
+            // Action remap table (MPRIS actions -> jellyfin-web inputManager commands)
+            const remap = {
+                'play_pause': 'playpause',
+                'play': 'play',
+                'pause': 'pause',
+                'stop': 'stop',
+                'next': 'next',
+                'previous': 'previous',
+                'seek_forward': 'fastforward',
+                'seek_backward': 'rewind'
+            };
+
+            // Incoming: MPRIS commands -> inputManager
+            window.api.input.hostInput.connect((actions) => {
+                console.log('[MPRIS] hostInput received:', actions);
+                actions.forEach(action => {
+                    // Remap action name if needed
+                    const mappedAction = remap[action] || action;
+                    console.log('[MPRIS] Sending to inputManager:', mappedAction);
+                    if (self.inputManager && typeof self.inputManager.handleCommand === 'function') {
+                        self.inputManager.handleCommand(mappedAction, {});
+                    } else {
+                        console.log('[MPRIS] inputManager.handleCommand not available, inputManager:', !!self.inputManager);
+                    }
+                });
+            });
+
+            window.api.input.positionSeek.connect((positionMs) => {
+                console.log('[MPRIS] positionSeek received:', positionMs);
+                const currentPlayer = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
+                if (currentPlayer) {
+                    // Duration from playbackManager is in Jellyfin ticks (1 tick = 100ns)
+                    // Position is in milliseconds
+                    // Convert: percent = (positionMs * 10000) / durationTicks * 100
+                    const duration = pm.duration ? pm.duration() : 0;
+                    if (duration > 0) {
+                        const percent = (positionMs * 10000) / duration * 100;
+                        console.log('[MPRIS] Seeking to', percent.toFixed(2), '% (', positionMs, 'ms of', duration, 'ticks)');
+                        pm.seekPercent(percent, currentPlayer);
+                    }
+                }
+            });
+
+            console.log('[MPRIS] Events setup complete');
+        }
+
+        destroy() {
+            this.stopPositionUpdates();
+            // Cancel any pending artwork request
+            if (this.artworkAbortController) {
+                this.artworkAbortController.abort();
+                this.artworkAbortController = null;
+            }
+            // Detach from player
+            if (this.attachedPlayer && window.Events) {
+                window.Events.off(this.attachedPlayer, 'playing');
+                window.Events.off(this.attachedPlayer, 'pause');
+                window.Events.off(this.attachedPlayer, 'timeupdate');
+                this.attachedPlayer = null;
+            }
+            // Detach from playbackManager
+            if (this.playbackManager && window.Events) {
+                window.Events.off(this.playbackManager, 'playbackstart');
+                window.Events.off(this.playbackManager, 'playbackstop');
+            }
+        }
+    }
+
+    window._inputPlugin = inputPlugin;
+    console.log('[Native] inputPlugin class installed');
+})();
+)JS";
+
+    frame->ExecuteJavaScript(input_plugin, frame->GetURL(), 0);
 }
 
 bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
@@ -764,11 +1163,14 @@ bool NativeV8Handler::Execute(const CefString& name,
                               CefString& exception) {
     std::cerr << "[V8] Execute: " << name.ToString() << std::endl;
 
-    // playerLoad(url, startMs, audioIdx, subIdx)
+    // playerLoad(url, startMs, audioIdx, subIdx, metadataJson)
     if (name == "playerLoad") {
         if (arguments.size() >= 1 && arguments[0]->IsString()) {
             std::string url = arguments[0]->GetStringValue().ToString();
-            int64_t startMs = arguments.size() > 1 && arguments[1]->IsInt() ? arguments[1]->GetIntValue() : 0;
+            int startMs = arguments.size() > 1 && arguments[1]->IsInt() ? arguments[1]->GetIntValue() : 0;
+            int audioIdx = arguments.size() > 2 && arguments[2]->IsInt() ? arguments[2]->GetIntValue() : -1;
+            int subIdx = arguments.size() > 3 && arguments[3]->IsInt() ? arguments[3]->GetIntValue() : -1;
+            std::string metadataJson = arguments.size() > 4 && arguments[4]->IsString() ? arguments[4]->GetStringValue().ToString() : "{}";
 
             std::cerr << "[V8] playerLoad: " << url << " startMs=" << startMs << std::endl;
 
@@ -776,7 +1178,10 @@ bool NativeV8Handler::Execute(const CefString& name,
             CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("playerLoad");
             CefRefPtr<CefListValue> args = msg->GetArgumentList();
             args->SetString(0, url);
-            args->SetInt(1, static_cast<int>(startMs));
+            args->SetInt(1, startMs);
+            args->SetInt(2, audioIdx);
+            args->SetInt(3, subIdx);
+            args->SetString(4, metadataJson);
             browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
         }
         return true;
@@ -831,6 +1236,72 @@ bool NativeV8Handler::Execute(const CefString& name,
             std::cerr << "[V8] playerSetMuted: " << muted << std::endl;
             CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("playerSetMuted");
             msg->GetArgumentList()->SetBool(0, muted);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "notifyMetadata") {
+        if (arguments.size() >= 1 && arguments[0]->IsString()) {
+            std::string metadata = arguments[0]->GetStringValue().ToString();
+            std::cerr << "[V8] notifyMetadata: " << metadata.substr(0, 100) << "..." << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("notifyMetadata");
+            msg->GetArgumentList()->SetString(0, metadata);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "notifyPosition") {
+        if (arguments.size() >= 1 && arguments[0]->IsInt()) {
+            int posMs = arguments[0]->GetIntValue();
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("notifyPosition");
+            msg->GetArgumentList()->SetInt(0, posMs);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "notifySeek") {
+        if (arguments.size() >= 1 && arguments[0]->IsInt()) {
+            int posMs = arguments[0]->GetIntValue();
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("notifySeek");
+            msg->GetArgumentList()->SetInt(0, posMs);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "notifyPlaybackState") {
+        if (arguments.size() >= 1 && arguments[0]->IsString()) {
+            std::string state = arguments[0]->GetStringValue().ToString();
+            std::cerr << "[V8] notifyPlaybackState: " << state << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("notifyPlaybackState");
+            msg->GetArgumentList()->SetString(0, state);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "notifyArtwork") {
+        if (arguments.size() >= 1 && arguments[0]->IsString()) {
+            std::string artworkUri = arguments[0]->GetStringValue().ToString();
+            std::cerr << "[V8] notifyArtwork: " << artworkUri.substr(0, 50) << "..." << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("notifyArtwork");
+            msg->GetArgumentList()->SetString(0, artworkUri);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "notifyQueueChange") {
+        if (arguments.size() >= 2 && arguments[0]->IsBool() && arguments[1]->IsBool()) {
+            bool canNext = arguments[0]->GetBoolValue();
+            bool canPrev = arguments[1]->GetBoolValue();
+            std::cerr << "[V8] notifyQueueChange: canNext=" << canNext << " canPrev=" << canPrev << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("notifyQueueChange");
+            msg->GetArgumentList()->SetBool(0, canNext);
+            msg->GetArgumentList()->SetBool(1, canPrev);
             browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
         }
         return true;

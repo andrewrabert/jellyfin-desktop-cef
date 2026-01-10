@@ -63,28 +63,29 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
     if (name == "playerLoad") {
         std::string url = args->GetString(0).ToString();
         int startMs = args->GetSize() > 1 ? args->GetInt(1) : 0;
-        on_player_msg_("load", url, startMs);
+        std::string metadata = args->GetSize() > 4 ? args->GetString(4).ToString() : "{}";
+        on_player_msg_("load", url, startMs, metadata);
         return true;
     } else if (name == "playerStop") {
-        on_player_msg_("stop", "", 0);
+        on_player_msg_("stop", "", 0, "");
         return true;
     } else if (name == "playerPause") {
-        on_player_msg_("pause", "", 0);
+        on_player_msg_("pause", "", 0, "");
         return true;
     } else if (name == "playerPlay") {
-        on_player_msg_("play", "", 0);
+        on_player_msg_("play", "", 0, "");
         return true;
     } else if (name == "playerSeek") {
         int ms = args->GetInt(0);
-        on_player_msg_("seek", "", ms);
+        on_player_msg_("seek", "", ms, "");
         return true;
     } else if (name == "playerSetVolume") {
         int vol = args->GetInt(0);
-        on_player_msg_("volume", "", vol);
+        on_player_msg_("volume", "", vol, "");
         return true;
     } else if (name == "playerSetMuted") {
         bool muted = args->GetBool(0);
-        on_player_msg_("mute", "", muted ? 1 : 0);
+        on_player_msg_("mute", "", muted ? 1 : 0, "");
         return true;
     } else if (name == "saveServerUrl") {
         std::string url = args->GetString(0).ToString();
@@ -94,7 +95,34 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         return true;
     } else if (name == "setFullscreen") {
         bool enable = args->GetBool(0);
-        on_player_msg_("fullscreen", "", enable ? 1 : 0);
+        on_player_msg_("fullscreen", "", enable ? 1 : 0, "");
+        return true;
+    } else if (name == "notifyMetadata") {
+        std::string metadata = args->GetString(0).ToString();
+        on_player_msg_("mpris_metadata", metadata, 0, "");
+        return true;
+    } else if (name == "notifyPosition") {
+        int posMs = args->GetInt(0);
+        on_player_msg_("mpris_position", "", posMs, "");
+        return true;
+    } else if (name == "notifySeek") {
+        int posMs = args->GetInt(0);
+        on_player_msg_("mpris_seeked", "", posMs, "");
+        return true;
+    } else if (name == "notifyPlaybackState") {
+        std::string state = args->GetString(0).ToString();
+        on_player_msg_("mpris_state", state, 0, "");
+        return true;
+    } else if (name == "notifyArtwork") {
+        std::string artworkUri = args->GetString(0).ToString();
+        on_player_msg_("mpris_artwork", artworkUri, 0, "");
+        return true;
+    } else if (name == "notifyQueueChange") {
+        bool canNext = args->GetBool(0);
+        bool canPrev = args->GetBool(1);
+        // Encode both bools in intArg: bit 0 = canNext, bit 1 = canPrev
+        int flags = (canNext ? 1 : 0) | (canPrev ? 2 : 0);
+        on_player_msg_("mpris_queue", "", flags, "");
         return true;
     }
 

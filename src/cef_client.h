@@ -16,7 +16,8 @@
 class MenuOverlay;
 
 // Message callback for player commands from renderer
-using PlayerMessageCallback = std::function<void(const std::string& cmd, const std::string& arg, int intArg)>;
+// metadata is JSON string for "load" command, empty otherwise
+using PlayerMessageCallback = std::function<void(const std::string& cmd, const std::string& arg, int intArg, const std::string& metadata)>;
 
 // Cursor change callback (passes CEF cursor type)
 using CursorChangeCallback = std::function<void(cef_cursor_type_t type)>;

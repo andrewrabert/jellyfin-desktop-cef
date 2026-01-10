@@ -30,6 +30,7 @@ void activateMacWindow();
 #else
 #include "egl_context.h"
 #include "wayland_subsurface.h"
+#include "media_session.h"
 #include "opengl_compositor.h"
 #endif
 #include "mpv_player_vk.h"
@@ -98,6 +99,81 @@ SDL_SystemCursor cefCursorToSDL(cef_cursor_type_t type) {
 
 static auto _main_start = std::chrono::steady_clock::now();
 inline long _ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - _main_start).count(); }
+
+// Simple JSON string value extractor (handles escaped quotes)
+std::string jsonGetString(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\":";
+    size_t pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos += search.length();
+    // Skip whitespace
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (pos >= json.size() || json[pos] != '"') return "";
+    pos++;  // Skip opening quote
+    std::string result;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) {
+            pos++;  // Skip escape char
+        }
+        result += json[pos++];
+    }
+    return result;
+}
+
+// Extract integer from JSON
+int64_t jsonGetInt(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\":";
+    size_t pos = json.find(search);
+    if (pos == std::string::npos) return 0;
+    pos += search.length();
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    std::string num;
+    while (pos < json.size() && (isdigit(json[pos]) || json[pos] == '-')) {
+        num += json[pos++];
+    }
+    return num.empty() ? 0 : std::stoll(num);
+}
+
+// Extract first element from JSON array of strings
+std::string jsonGetFirstArrayString(const std::string& json, const std::string& key) {
+    std::string search = "\"" + key + "\":";
+    size_t pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    pos += search.length();
+    while (pos < json.size() && json[pos] != '[') pos++;
+    if (pos >= json.size()) return "";
+    pos++;  // Skip [
+    while (pos < json.size() && json[pos] != '"' && json[pos] != ']') pos++;
+    if (pos >= json.size() || json[pos] == ']') return "";
+    pos++;  // Skip opening quote
+    std::string result;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) pos++;
+        result += json[pos++];
+    }
+    return result;
+}
+
+#ifndef __APPLE__
+MediaMetadata parseMetadataJson(const std::string& json) {
+    MediaMetadata meta;
+    meta.title = jsonGetString(json, "Name");
+    // For episodes, use SeriesName as artist; for audio, use Artists array
+    meta.artist = jsonGetString(json, "SeriesName");
+    if (meta.artist.empty()) {
+        meta.artist = jsonGetFirstArrayString(json, "Artists");
+    }
+    // For episodes, use SeasonName as album; for audio, use Album
+    meta.album = jsonGetString(json, "SeasonName");
+    if (meta.album.empty()) {
+        meta.album = jsonGetString(json, "Album");
+    }
+    meta.track_number = static_cast<int>(jsonGetInt(json, "IndexNumber"));
+    // RunTimeTicks is in 100ns units, convert to microseconds
+    meta.duration_us = jsonGetInt(json, "RunTimeTicks") / 10;
+    return meta;
+}
+#endif
 
 int main(int argc, char* argv[]) {
 #ifdef __APPLE__
@@ -346,9 +422,46 @@ int main(int argc, char* argv[]) {
         std::string cmd;
         std::string url;
         int intArg;
+        std::string metadata;  // JSON for load command
     };
     std::mutex cmd_mutex;
     std::vector<PlayerCmd> pending_cmds;
+
+#ifndef __APPLE__
+    // Initialize MPRIS media session
+    MediaSession mediaSession;
+    mediaSession.onPlay = [&]() {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_action", "play", 0});
+    };
+    mediaSession.onPause = [&]() {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_action", "pause", 0});
+    };
+    mediaSession.onPlayPause = [&]() {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_action", "play_pause", 0});
+    };
+    mediaSession.onStop = [&]() {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_action", "stop", 0});
+    };
+    mediaSession.onSeek = [&](int64_t position_us) {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_seek", "", static_cast<int>(position_us / 1000)});
+    };
+    mediaSession.onNext = [&]() {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_action", "next", 0});
+    };
+    mediaSession.onPrevious = [&]() {
+        std::lock_guard<std::mutex> lock(cmd_mutex);
+        pending_cmds.push_back({"mpris_action", "previous", 0});
+    };
+    mediaSession.onRaise = [&]() {
+        SDL_RaiseWindow(window);
+    };
+#endif
 
     // Overlay browser state
     enum class OverlayState { SHOWING, WAITING, FADING, HIDDEN };
@@ -417,9 +530,9 @@ int main(int argc, char* argv[]) {
             paint_width = w;
             paint_height = h;
         },
-        [&](const std::string& cmd, const std::string& arg, int intArg) {
+        [&](const std::string& cmd, const std::string& arg, int intArg, const std::string& metadata) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
-            pending_cmds.push_back({cmd, arg, intArg});
+            pending_cmds.push_back({cmd, arg, intArg, metadata});
         },
 #ifdef __APPLE__
         nullptr,  // No GPU accelerated paint on macOS (using Metal compositor)
@@ -502,6 +615,45 @@ int main(int argc, char* argv[]) {
     std::cerr << "CEF pump interval: " << cef_pump_interval_ms << "ms" << std::endl;
 #endif
 
+    // Set up mpv event callbacks (event-driven like jellyfin-desktop)
+    mpv.setPositionCallback([&](double ms) {
+        client->updatePosition(ms);
+#ifndef __APPLE__
+        mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
+#endif
+    });
+    mpv.setDurationCallback([&](double ms) {
+        client->updateDuration(ms);
+    });
+    mpv.setPlayingCallback([&]() {
+        // FILE_LOADED - initial playback start
+        client->emitPlaying();
+#ifndef __APPLE__
+        mediaSession.setPlaybackState(PlaybackState::Playing);
+#endif
+    });
+    mpv.setStateCallback([&](bool paused) {
+        // pause property changed - pause/resume
+        if (paused) {
+            client->emitPaused();
+#ifndef __APPLE__
+            mediaSession.setPlaybackState(PlaybackState::Paused);
+#endif
+        } else {
+            client->emitPlaying();
+#ifndef __APPLE__
+            mediaSession.setPlaybackState(PlaybackState::Playing);
+#endif
+        }
+    });
+    mpv.setFinishedCallback([&]() {
+        has_video = false;
+        client->emitFinished();
+#ifndef __APPLE__
+        mediaSession.setPlaybackState(PlaybackState::Stopped);
+#endif
+    });
+
     // Auto-load test video if provided via --video
     if (!test_video.empty()) {
         std::cerr << "[TEST] Loading video: " << test_video << std::endl;
@@ -529,6 +681,9 @@ int main(int argc, char* argv[]) {
         auto now = Clock::now();
         bool activity_this_frame = false;
 
+        // Process mpv events (event-driven position/state updates)
+        mpv.processEvents();
+
         if (!focus_set) {
             if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
                 overlay_client->sendFocus(true);
@@ -539,6 +694,11 @@ int main(int argc, char* argv[]) {
             }
             focus_set = true;
         }
+
+#ifndef __APPLE__
+        // Process MPRIS D-Bus events
+        mediaSession.update();
+#endif
 
         // Event-driven: wait for events when idle, poll when active
         SDL_Event event;
@@ -768,6 +928,14 @@ int main(int argc, char* argv[]) {
                 if (cmd.cmd == "load") {
                     double startSec = static_cast<double>(cmd.intArg) / 1000.0;
                     std::cerr << "[MAIN] playerLoad: " << cmd.url << " start=" << startSec << "s" << std::endl;
+#ifndef __APPLE__
+                    // Parse and set metadata for MPRIS
+                    if (!cmd.metadata.empty() && cmd.metadata != "{}") {
+                        MediaMetadata meta = parseMetadataJson(cmd.metadata);
+                        std::cerr << "[MAIN] metadata: title=" << meta.title << " artist=" << meta.artist << std::endl;
+                        mediaSession.setMetadata(meta);
+                    }
+#endif
                     if (mpv.loadFile(cmd.url, startSec)) {
                         has_video = true;
 #ifdef __APPLE__
@@ -779,7 +947,7 @@ int main(int argc, char* argv[]) {
                             subsurface.setColorspace();
                         }
 #endif
-                        client->emitPlaying();
+                        // mpv events will trigger state callbacks
                     } else {
                         client->emitError("Failed to load video");
                     }
@@ -787,13 +955,20 @@ int main(int argc, char* argv[]) {
                     mpv.stop();
                     has_video = false;
                     video_ready = false;
-                    client->emitFinished();
+                    // mpv END_FILE event will trigger finished callback
                 } else if (cmd.cmd == "pause") {
                     mpv.pause();
-                    client->emitPaused();
+                    // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "play") {
                     mpv.play();
-                    client->emitPlaying();
+                    // mpv pause property change will trigger state callback
+                } else if (cmd.cmd == "playpause") {
+                    if (mpv.isPaused()) {
+                        mpv.play();
+                    } else {
+                        mpv.pause();
+                    }
+                    // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "seek") {
                     mpv.seek(static_cast<double>(cmd.intArg) / 1000.0);
                 } else if (cmd.cmd == "volume") {
@@ -803,6 +978,42 @@ int main(int argc, char* argv[]) {
                 } else if (cmd.cmd == "fullscreen") {
                     bool enable = cmd.intArg != 0;
                     SDL_SetWindowFullscreen(window, enable);
+                } else if (cmd.cmd == "mpris_metadata") {
+                    MediaMetadata meta = parseMetadataJson(cmd.url);
+                    std::cerr << "[MAIN] MPRIS metadata: title=" << meta.title << std::endl;
+                    mediaSession.setMetadata(meta);
+                } else if (cmd.cmd == "mpris_position") {
+                    int64_t pos_us = static_cast<int64_t>(cmd.intArg) * 1000;
+                    mediaSession.setPosition(pos_us);
+                } else if (cmd.cmd == "mpris_state") {
+                    if (cmd.url == "Playing") {
+                        mediaSession.setPlaybackState(PlaybackState::Playing);
+                    } else if (cmd.url == "Paused") {
+                        mediaSession.setPlaybackState(PlaybackState::Paused);
+                    } else {
+                        mediaSession.setPlaybackState(PlaybackState::Stopped);
+                    }
+                } else if (cmd.cmd == "mpris_artwork") {
+                    std::cerr << "[MAIN] MPRIS artwork received: " << cmd.url.substr(0, 50) << "..." << std::endl;
+                    mediaSession.setArtwork(cmd.url);
+                } else if (cmd.cmd == "mpris_queue") {
+                    // Decode flags: bit 0 = canNext, bit 1 = canPrev
+                    bool canNext = (cmd.intArg & 1) != 0;
+                    bool canPrev = (cmd.intArg & 2) != 0;
+                    mediaSession.setCanGoNext(canNext);
+                    mediaSession.setCanGoPrevious(canPrev);
+                } else if (cmd.cmd == "mpris_seeked") {
+                    // JS detected a seek - emit Seeked signal to MPRIS
+                    int64_t pos_us = static_cast<int64_t>(cmd.intArg) * 1000;
+                    mediaSession.emitSeeked(pos_us);
+                } else if (cmd.cmd == "mpris_action") {
+                    // Route MPRIS control commands to JS playbackManager
+                    std::string js = "if(window._nativeHostInput) window._nativeHostInput(['" + cmd.url + "']);";
+                    client->executeJS(js);
+                } else if (cmd.cmd == "mpris_seek") {
+                    // Route MPRIS seek to JS playbackManager
+                    std::string js = "if(window._nativeSeek) window._nativeSeek(" + std::to_string(cmd.intArg) + ");";
+                    client->executeJS(js);
                 }
             }
             pending_cmds.clear();
@@ -864,21 +1075,6 @@ int main(int argc, char* argv[]) {
         } else {
             float fade_progress = (idle_sec - IDLE_TIMEOUT_SEC) / FADE_DURATION_SEC;
             overlay_alpha = std::max(0.0f, 1.0f - fade_progress);
-        }
-
-        // Update position/duration
-        static auto last_position_update = Clock::now();
-        if (has_video && mpv.isPlaying()) {
-            auto time_since_update = std::chrono::duration<float>(now - last_position_update).count();
-            if (time_since_update >= 0.5f) {
-                double pos = mpv.getPosition() * 1000.0;
-                double dur = mpv.getDuration() * 1000.0;
-                client->updatePosition(pos);
-                if (dur > 0) {
-                    client->updateDuration(dur);
-                }
-                last_position_update = now;
-            }
         }
 
         // Menu overlay blending

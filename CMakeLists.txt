@@ -63,6 +63,7 @@ else()
     pkg_check_modules(LIBDRM REQUIRED libdrm)
     pkg_check_modules(WAYLAND REQUIRED wayland-client)
     pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
+    pkg_check_modules(SYSTEMD REQUIRED libsystemd)
 
     # Find wayland-scanner
     find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -93,12 +94,15 @@ else()
         src/egl_context.cpp
         src/wayland_subsurface.cpp
         src/opengl_compositor.cpp
+        src/media_session.cpp
+        src/media_session_mpris.cpp
         ${COLOR_MGMT_CODE_C}
         ${COLOR_MGMT_CLIENT_H}
     )
     set(PLATFORM_LIBRARIES
         ${WAYLAND_LIBRARIES}
         ${WAYLAND_EGL_LIBRARIES}
+        ${SYSTEMD_LIBRARIES}
         OpenGL::EGL
         OpenGL::OpenGL
     )
@@ -106,6 +110,7 @@ else()
         ${WAYLAND_INCLUDE_DIRS}
         ${WAYLAND_EGL_INCLUDE_DIRS}
         ${LIBDRM_INCLUDE_DIRS}
+        ${SYSTEMD_INCLUDE_DIRS}
         ${CMAKE_BINARY_DIR}
     )
 endif()
@@ -154,6 +159,12 @@ add_executable(jellyfin-desktop
     src/menu_overlay.cpp
     ${PLATFORM_SOURCES}
 )
+
+# Always recompile cef_app.cpp (contains embedded JS shims)
+add_custom_target(force_native_shims
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/CMakeFiles/jellyfin-desktop.dir/src/cef_app.cpp.o
+)
+add_dependencies(jellyfin-desktop force_native_shims)
 
 target_include_directories(jellyfin-desktop PRIVATE
     ${CEF_INCLUDE_DIRS}

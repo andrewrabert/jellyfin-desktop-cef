@@ -4,6 +4,7 @@
 #include <mpv/render_vk.h>
 #include <iostream>
 #include <clocale>
+#include <cmath>
 
 MpvPlayerVk::MpvPlayerVk() = default;
 
@@ -27,6 +28,58 @@ void MpvPlayerVk::onMpvRedraw(void* ctx) {
     player->needs_redraw_ = true;
     if (player->redraw_callback_) {
         player->redraw_callback_();
+    }
+}
+
+void MpvPlayerVk::onMpvWakeup(void* ctx) {
+    MpvPlayerVk* player = static_cast<MpvPlayerVk*>(ctx);
+    player->has_events_ = true;
+}
+
+void MpvPlayerVk::processEvents() {
+    if (!mpv_ || !has_events_.exchange(false)) return;
+
+    while (true) {
+        mpv_event* event = mpv_wait_event(mpv_, 0);
+        if (event->event_id == MPV_EVENT_NONE) break;
+        handleMpvEvent(event);
+    }
+}
+
+void MpvPlayerVk::handleMpvEvent(mpv_event* event) {
+    switch (event->event_id) {
+        case MPV_EVENT_PROPERTY_CHANGE: {
+            mpv_event_property* prop = static_cast<mpv_event_property*>(event->data);
+            if (strcmp(prop->name, "playback-time") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
+                double pos = *static_cast<double*>(prop->data);
+                // Filter jitter (15ms threshold like jellyfin-desktop)
+                if (std::fabs(pos - last_position_) > 0.015) {
+                    last_position_ = pos;
+                    if (on_position_) on_position_(pos * 1000.0);
+                }
+            } else if (strcmp(prop->name, "duration") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
+                double dur = *static_cast<double*>(prop->data);
+                if (on_duration_) on_duration_(dur * 1000.0);
+            } else if (strcmp(prop->name, "pause") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool paused = *static_cast<int*>(prop->data) != 0;
+                if (on_state_) on_state_(paused);
+            }
+            break;
+        }
+        case MPV_EVENT_START_FILE:
+            playing_ = true;
+            break;
+        case MPV_EVENT_FILE_LOADED:
+            if (on_playing_) on_playing_();
+            break;
+        case MPV_EVENT_END_FILE: {
+            mpv_event_end_file* ef = static_cast<mpv_event_end_file*>(event->data);
+            playing_ = false;
+            if (on_finished_) on_finished_();
+            break;
+        }
+        default:
+            break;
     }
 }
 
@@ -76,6 +129,14 @@ bool MpvPlayerVk::init(VulkanContext* vk, VideoSurface* subsurface) {
         std::cerr << "mpv_initialize failed" << std::endl;
         return false;
     }
+
+    // Set up property observation (like jellyfin-desktop)
+    mpv_observe_property(mpv_, 0, "playback-time", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "duration", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "pause", MPV_FORMAT_FLAG);
+
+    // Wakeup callback for event-driven processing
+    mpv_set_wakeup_callback(mpv_, onMpvWakeup, this);
 
     // Set up Vulkan render context - use subsurface's device if available for HDR
     mpv_vulkan_init_params vk_params{};

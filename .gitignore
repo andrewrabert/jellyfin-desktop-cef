@@ -11,3 +11,5 @@ third_party/*
 *.swp
 compile_commands.json
 .cache/
+out
+app.log
