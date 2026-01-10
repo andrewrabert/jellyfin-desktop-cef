@@ -633,6 +633,9 @@ int main(int argc, char* argv[]) {
 #endif
     });
     mpv.setStateCallback([&](bool paused) {
+        // Ignore initial property emission before any file is loaded
+        if (!mpv.isPlaying()) return;
+
         // pause property changed - pause/resume
         if (paused) {
             client->emitPaused();
