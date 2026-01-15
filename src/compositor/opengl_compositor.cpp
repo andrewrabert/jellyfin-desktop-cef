@@ -1,4 +1,4 @@
-#include "opengl_compositor.h"
+#include "compositor/opengl_compositor.h"
 #include <iostream>
 #include <cstring>
 

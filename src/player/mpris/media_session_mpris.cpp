@@ -1,4 +1,4 @@
-#include "media_session_mpris.h"
+#include "player/mpris/media_session_mpris.h"
 #include <iostream>
 #include <cstring>
 

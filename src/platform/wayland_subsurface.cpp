@@ -1,4 +1,4 @@
-#include "wayland_subsurface.h"
+#include "platform/wayland_subsurface.h"
 #include <SDL3/SDL.h>
 #include <iostream>
 #include <algorithm>

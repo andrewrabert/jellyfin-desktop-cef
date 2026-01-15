@@ -1,7 +1,7 @@
 #pragma once
 
-#include "vulkan_context.h"
-#include "cef_client.h"  // For AcceleratedPaintInfo
+#include "context/vulkan_context.h"
+#include "cef/cef_client.h"  // For AcceleratedPaintInfo
 #include <mutex>
 #include <chrono>
 

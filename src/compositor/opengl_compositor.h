@@ -1,17 +1,17 @@
 #pragma once
 
 #ifdef __APPLE__
-#include "cgl_context.h"
+#include "context/cgl_context.h"
 #include <OpenGL/gl3.h>
 #include <IOSurface/IOSurface.h>
 typedef CGLContext GLContext;
 #else
-#include "egl_context.h"
+#include "context/egl_context.h"
 #include <libdrm/drm_fourcc.h>
 typedef EGLContext_ GLContext;
 #endif
 
-#include "cef_client.h"  // For AcceleratedPaintInfo
+#include "cef/cef_client.h"  // For AcceleratedPaintInfo
 #include <mutex>
 #include <vector>
 #include <chrono>

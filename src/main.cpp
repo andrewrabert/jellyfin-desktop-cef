@@ -25,18 +25,18 @@ void activateMacWindow();
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
-#include "macos_layer.h"
-#include "metal_compositor.h"
+#include "platform/macos_layer.h"
+#include "compositor/metal_compositor.h"
 #else
-#include "egl_context.h"
-#include "wayland_subsurface.h"
-#include "media_session.h"
-#include "opengl_compositor.h"
+#include "context/egl_context.h"
+#include "platform/wayland_subsurface.h"
+#include "player/mpris/media_session.h"
+#include "compositor/opengl_compositor.h"
 #endif
-#include "mpv_player_vk.h"
-#include "cef_app.h"
-#include "cef_client.h"
-#include "menu_overlay.h"
+#include "player/mpv/mpv_player_vk.h"
+#include "cef/cef_app.h"
+#include "cef/cef_client.h"
+#include "ui/menu_overlay.h"
 #include "settings.h"
 
 // Fade constants

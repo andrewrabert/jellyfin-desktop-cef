@@ -1,11 +1,11 @@
 #pragma once
 
-#include "vulkan_context.h"
+#include "context/vulkan_context.h"
 #ifdef __APPLE__
-#include "macos_layer.h"
+#include "platform/macos_layer.h"
 using VideoSurface = MacOSVideoLayer;
 #else
-#include "wayland_subsurface.h"
+#include "platform/wayland_subsurface.h"
 using VideoSurface = WaylandSubsurface;
 #endif
 #include <string>

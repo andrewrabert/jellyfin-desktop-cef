@@ -1,6 +1,6 @@
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "stb_truetype.h"
-#include "menu_overlay.h"
+#include "ui/stb_truetype.h"
+#include "ui/menu_overlay.h"
 #include <fstream>
 #include <algorithm>
 #include <cstring>

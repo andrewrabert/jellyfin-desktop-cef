@@ -45,9 +45,9 @@ if(APPLE)
     find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
 
     set(PLATFORM_SOURCES
-        src/macos_layer.mm
-        src/macos_app.mm
-        src/metal_compositor.mm
+        src/platform/macos_layer.mm
+        src/platform/macos_app.mm
+        src/compositor/metal_compositor.mm
     )
     set(PLATFORM_LIBRARIES
         ${COCOA_FRAMEWORK}
@@ -91,11 +91,11 @@ else()
     )
 
     set(PLATFORM_SOURCES
-        src/egl_context.cpp
-        src/wayland_subsurface.cpp
-        src/opengl_compositor.cpp
-        src/media_session.cpp
-        src/media_session_mpris.cpp
+        src/context/egl_context.cpp
+        src/platform/wayland_subsurface.cpp
+        src/compositor/opengl_compositor.cpp
+        src/player/mpris/media_session.cpp
+        src/player/mpris/media_session_mpris.cpp
         ${COLOR_MGMT_CODE_C}
         ${COLOR_MGMT_CLIENT_H}
     )
@@ -151,18 +151,18 @@ set(MPV_LIBRARIES "${MPV_LIBRARY}")
 
 add_executable(jellyfin-desktop
     src/main.cpp
-    src/cef_app.cpp
-    src/cef_client.cpp
-    src/vulkan_context.cpp
-    src/mpv_player_vk.cpp
+    src/cef/cef_app.cpp
+    src/cef/cef_client.cpp
+    src/context/vulkan_context.cpp
+    src/player/mpv/mpv_player_vk.cpp
     src/settings.cpp
-    src/menu_overlay.cpp
+    src/ui/menu_overlay.cpp
     ${PLATFORM_SOURCES}
 )
 
 # Always recompile cef_app.cpp (contains embedded JS shims)
 add_custom_target(force_native_shims
-    COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/CMakeFiles/jellyfin-desktop.dir/src/cef_app.cpp.o
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/CMakeFiles/jellyfin-desktop.dir/src/cef/cef_app.cpp.o
 )
 add_dependencies(jellyfin-desktop force_native_shims)
 
@@ -185,9 +185,9 @@ target_link_libraries(jellyfin-desktop PRIVATE
 # Enable ARC for Objective-C++ files on macOS
 if(APPLE)
     set_source_files_properties(
-        src/macos_layer.mm
-        src/macos_app.mm
-        src/metal_compositor.mm
+        src/platform/macos_layer.mm
+        src/platform/macos_app.mm
+        src/compositor/metal_compositor.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc"
     )
 endif()

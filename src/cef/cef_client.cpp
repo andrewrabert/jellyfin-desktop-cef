@@ -1,5 +1,5 @@
-#include "cef_client.h"
-#include "menu_overlay.h"
+#include "cef/cef_client.h"
+#include "ui/menu_overlay.h"
 #include "settings.h"
 #include <iostream>
 #ifndef __APPLE__

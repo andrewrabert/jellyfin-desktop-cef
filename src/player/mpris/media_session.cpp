@@ -1,4 +1,4 @@
-#include "media_session.h"
+#include "player/mpris/media_session.h"
 
 #ifdef __linux__
 // Forward declaration - implemented in media_session_mpris.cpp
