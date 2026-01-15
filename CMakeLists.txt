@@ -149,6 +149,27 @@ add_custom_target(mpv_build
 set(MPV_INCLUDE_DIRS "${MPV_SOURCE_DIR}/include")
 set(MPV_LIBRARIES "${MPV_LIBRARY}")
 
+# Embed JS shims into generated header
+set(JS_SHIMS
+    ${CMAKE_SOURCE_DIR}/src/web/native-shim.js
+    ${CMAKE_SOURCE_DIR}/src/web/mpv-video-player.js
+    ${CMAKE_SOURCE_DIR}/src/web/mpv-audio-player.js
+    ${CMAKE_SOURCE_DIR}/src/web/input-plugin.js
+)
+set(EMBEDDED_JS_HEADER ${CMAKE_BINARY_DIR}/generated/embedded_js.h)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
+
+add_custom_command(
+    OUTPUT ${EMBEDDED_JS_HEADER}
+    COMMAND ${CMAKE_COMMAND}
+        -DJS_FILES="${JS_SHIMS}"
+        -DOUTPUT_FILE=${EMBEDDED_JS_HEADER}
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_resources.cmake
+    DEPENDS ${JS_SHIMS}
+    COMMENT "Embedding JS shims"
+)
+add_custom_target(embedded_js DEPENDS ${EMBEDDED_JS_HEADER})
+
 add_executable(jellyfin-desktop
     src/main.cpp
     src/cef/cef_app.cpp
@@ -160,11 +181,8 @@ add_executable(jellyfin-desktop
     ${PLATFORM_SOURCES}
 )
 
-# Always recompile cef_app.cpp (contains embedded JS shims)
-add_custom_target(force_native_shims
-    COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/CMakeFiles/jellyfin-desktop.dir/src/cef/cef_app.cpp.o
-)
-add_dependencies(jellyfin-desktop force_native_shims)
+# Ensure JS shims are embedded before compiling cef_app.cpp
+add_dependencies(jellyfin-desktop embedded_js)
 
 target_include_directories(jellyfin-desktop PRIVATE
     ${CEF_INCLUDE_DIRS}
@@ -172,6 +190,7 @@ target_include_directories(jellyfin-desktop PRIVATE
     ${Vulkan_INCLUDE_DIRS}
     ${PLATFORM_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}/generated
 )
 
 target_link_libraries(jellyfin-desktop PRIVATE
@@ -235,10 +254,10 @@ else()
 endif()
 
 # Copy application resources (always sync when changed)
-file(GLOB_RECURSE RESOURCE_FILES "${CMAKE_SOURCE_DIR}/resources/*")
+file(GLOB_RECURSE RESOURCE_FILES "${CMAKE_SOURCE_DIR}/src/web/*")
 add_custom_target(copy_resources ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/resources"
+        "${CMAKE_SOURCE_DIR}/src/web"
         "${CMAKE_BINARY_DIR}/resources"
     DEPENDS ${RESOURCE_FILES}
     COMMENT "Copying resources"
