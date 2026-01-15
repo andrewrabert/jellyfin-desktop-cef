@@ -103,36 +103,36 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         return true;
     } else if (name == "notifyMetadata") {
         std::string metadata = args->GetString(0).ToString();
-        on_player_msg_("mpris_metadata", metadata, 0, "");
+        on_player_msg_("media_metadata", metadata, 0, "");
         return true;
     } else if (name == "notifyPosition") {
         int posMs = args->GetInt(0);
-        on_player_msg_("mpris_position", "", posMs, "");
+        on_player_msg_("media_position", "", posMs, "");
         return true;
     } else if (name == "notifySeek") {
         int posMs = args->GetInt(0);
-        on_player_msg_("mpris_seeked", "", posMs, "");
+        on_player_msg_("media_seeked", "", posMs, "");
         return true;
     } else if (name == "notifyPlaybackState") {
         std::string state = args->GetString(0).ToString();
-        on_player_msg_("mpris_state", state, 0, "");
+        on_player_msg_("media_state", state, 0, "");
         return true;
     } else if (name == "notifyArtwork") {
         std::string artworkUri = args->GetString(0).ToString();
-        on_player_msg_("mpris_artwork", artworkUri, 0, "");
+        on_player_msg_("media_artwork", artworkUri, 0, "");
         return true;
     } else if (name == "notifyQueueChange") {
         bool canNext = args->GetBool(0);
         bool canPrev = args->GetBool(1);
         // Encode both bools in intArg: bit 0 = canNext, bit 1 = canPrev
         int flags = (canNext ? 1 : 0) | (canPrev ? 2 : 0);
-        on_player_msg_("mpris_queue", "", flags, "");
+        on_player_msg_("media_queue", "", flags, "");
         return true;
     } else if (name == "notifyRateChange") {
         double rate = args->GetDouble(0);
         // Use the rate * 1000000 to pass as int (microseconds precision equivalent)
         // We'll decode this in main.cpp
-        on_player_msg_("mpris_notify_rate", "", static_cast<int>(rate * 1000000), "");
+        on_player_msg_("media_notify_rate", "", static_cast<int>(rate * 1000000), "");
         return true;
     }
 

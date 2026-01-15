@@ -1,6 +1,6 @@
 #pragma once
 
-#include "player/mpris/media_session.h"
+#include "player/media_session.h"
 #include <systemd/sd-bus.h>
 
 class MprisBackend : public MediaSessionBackend {

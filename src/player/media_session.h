@@ -4,6 +4,7 @@
 #include <functional>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 struct MediaMetadata {
     std::string title;
@@ -28,14 +29,14 @@ public:
     virtual void setCanGoNext(bool can) = 0;
     virtual void setCanGoPrevious(bool can) = 0;
     virtual void setRate(double rate) = 0;
-    virtual void emitSeeked(int64_t /*position_us*/) {}  // Emit Seeked signal (MPRIS only)
+    virtual void emitSeeked(int64_t /*position_us*/) {}
     virtual void update() = 0;  // Called from event loop to process events
     virtual int getFd() = 0;    // File descriptor for poll, -1 if none
 };
 
 class MediaSession {
 public:
-    MediaSession();
+    explicit MediaSession(std::unique_ptr<MediaSessionBackend> backend = nullptr);
     ~MediaSession();
 
     void setMetadata(const MediaMetadata& meta);
@@ -46,11 +47,10 @@ public:
     void setCanGoNext(bool can);
     void setCanGoPrevious(bool can);
     void setRate(double rate);
-    void emitSeeked(int64_t position_us);  // Emit Seeked signal (for MPRIS)
+    void emitSeeked(int64_t position_us);
 
     // Called from event loop
     void update();
-    int getFd();
 
     // Control callbacks (set by main.cpp)
     std::function<void()> onPlay;
@@ -64,10 +64,10 @@ public:
     std::function<void(bool)> onSetFullscreen;
     std::function<void(double)> onSetRate;
 
-    // Backend access (for platform-specific callbacks)
-    MediaSessionBackend* backend() { return backend_.get(); }
+    // Backend management
+    void addBackend(std::unique_ptr<MediaSessionBackend> backend) { backends_.push_back(std::move(backend)); }
 
 private:
-    std::unique_ptr<MediaSessionBackend> backend_;
+    std::vector<std::unique_ptr<MediaSessionBackend>> backends_;
     PlaybackState state_ = PlaybackState::Stopped;
 };

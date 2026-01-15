@@ -94,7 +94,7 @@ else()
         src/context/egl_context.cpp
         src/platform/wayland_subsurface.cpp
         src/compositor/opengl_compositor.cpp
-        src/player/mpris/media_session.cpp
+        src/player/media_session.cpp
         src/player/mpris/media_session_mpris.cpp
         ${COLOR_MGMT_CODE_C}
         ${COLOR_MGMT_CLIENT_H}

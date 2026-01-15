@@ -16,7 +16,7 @@ Uint32 SDL_PLAYVIDEO_EVENT = 0;
 static std::string readFile(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
-        std::cerr << "[Native] Failed to read: " << path << std::endl;
+        std::cerr << "Failed to read: " << path << std::endl;
         return "";
     }
     std::stringstream buffer;
@@ -80,7 +80,7 @@ void App::OnScheduleMessagePumpWork(int64_t delay_ms) {
 void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                            CefRefPtr<CefFrame> frame,
                            CefRefPtr<CefV8Context> context) {
-    std::cerr << "[Native] OnContextCreated: " << frame->GetURL().ToString() << std::endl;
+    std::cerr << "OnContextCreated: " << frame->GetURL().ToString() << std::endl;
 
     // Load settings (renderer process is separate from browser process)
     Settings::instance().load();
@@ -113,7 +113,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     // Inject the JavaScript shim that creates window.api, window.NativeShell, etc.
     const char* native_shim = R"JS(
 (function() {
-    console.log('[Native] Installing native shim...');
+    console.log('[Media] Installing native shim...');
 
     // Fullscreen state tracking
     window._isFullscreen = false;
@@ -122,19 +122,19 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     function createSignal(name) {
         const callbacks = [];
         const signal = function(...args) {
-            console.log('[Signal] ' + name + ' firing with', callbacks.length, 'listeners');
+            console.log('[Media] [Signal] ' + name + ' firing with', callbacks.length, 'listeners');
             for (const cb of callbacks) {
-                try { cb(...args); } catch(e) { console.error('[Signal] ' + name + ' error:', e); }
+                try { cb(...args); } catch(e) { console.error('[Media] [Signal] ' + name + ' error:', e); }
             }
         };
         signal.connect = (cb) => {
             callbacks.push(cb);
-            console.log('[Signal] ' + name + ' connected, now has', callbacks.length, 'listeners');
+            console.log('[Media] [Signal] ' + name + ' connected, now has', callbacks.length, 'listeners');
         };
         signal.disconnect = (cb) => {
             const idx = callbacks.indexOf(cb);
             if (idx >= 0) callbacks.splice(idx, 1);
-            console.log('[Signal] ' + name + ' disconnected, now has', callbacks.length, 'listeners');
+            console.log('[Media] [Signal] ' + name + ' disconnected, now has', callbacks.length, 'listeners');
         };
         return signal;
     }
@@ -209,7 +209,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
             // Methods
             load(url, options, streamdata, audioStream, subtitleStream, callback) {
-                console.log('[Native] player.load:', url);
+                console.log('[Media] player.load:', url);
                 if (callback) {
                     // Wait for playing signal before calling callback
                     const onPlaying = () => {
@@ -231,45 +231,45 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 }
             },
             stop() {
-                console.log('[Native] player.stop');
+                console.log('[Media] player.stop');
                 if (window.jmpNative) window.jmpNative.playerStop();
             },
             pause() {
-                console.log('[Native] player.pause');
+                console.log('[Media] player.pause');
                 if (window.jmpNative) window.jmpNative.playerPause();
                 playerState.paused = true;
             },
             play() {
-                console.log('[Native] player.play');
+                console.log('[Media] player.play');
                 if (window.jmpNative) window.jmpNative.playerPlay();
                 playerState.paused = false;
             },
             seekTo(ms) {
-                console.log('[Native] player.seekTo:', ms);
+                console.log('[Media] player.seekTo:', ms);
                 if (window.jmpNative) window.jmpNative.playerSeek(ms);
             },
             setVolume(vol) {
-                console.log('[Native] player.setVolume:', vol);
+                console.log('[Media] player.setVolume:', vol);
                 playerState.volume = vol;
                 if (window.jmpNative) window.jmpNative.playerSetVolume(vol);
             },
             setMuted(muted) {
-                console.log('[Native] player.setMuted:', muted);
+                console.log('[Media] player.setMuted:', muted);
                 playerState.muted = muted;
                 if (window.jmpNative) window.jmpNative.playerSetMuted(muted);
             },
             setPlaybackRate(rate) {
-                console.log('[Native] player.setPlaybackRate:', rate);
+                console.log('[Media] player.setPlaybackRate:', rate);
                 if (window.jmpNative) window.jmpNative.playerSetSpeed(rate);
             },
             setSubtitleStream(stream) {
-                console.log('[Native] player.setSubtitleStream:', stream);
+                console.log('[Media] player.setSubtitleStream:', stream);
             },
             setAudioStream(stream) {
-                console.log('[Native] player.setAudioStream:', stream);
+                console.log('[Media] player.setAudioStream:', stream);
             },
             setSubtitleDelay(ms) {
-                console.log('[Native] player.setSubtitleDelay:', ms);
+                console.log('[Media] player.setSubtitleDelay:', ms);
             },
             setVideoRectangle(x, y, w, h) {
                 // No-op for now, we always render fullscreen
@@ -290,7 +290,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 window.open(url, '_blank');
             },
             exit() {
-                console.log('[Native] exit requested');
+                console.log('[Media] exit requested');
             },
             cancelServerConnectivity() {
                 if (window.jmpCheckServerConnectivity && window.jmpCheckServerConnectivity.abort) {
@@ -306,14 +306,14 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             groupUpdate: createSignal('groupUpdate')
         },
         input: {
-            // Signals for MPRIS control commands
+            // Signals for media session control commands
             hostInput: createSignal('hostInput'),
             positionSeek: createSignal('positionSeek'),
             rateChanged: createSignal('rateChanged'),
             volumeChanged: createSignal('volumeChanged'),
 
             executeActions(actions) {
-                console.log('[Native] executeActions:', actions);
+                console.log('[Media] executeActions:', actions);
                 for (const action of actions) {
                     if (action === 'host:fullscreen') {
                         const newState = !window._isFullscreen;
@@ -330,12 +330,12 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
     // Expose signal emitter for native code
     window._nativeEmit = function(signal, ...args) {
-        console.log('[Native] _nativeEmit called with signal:', signal, 'args:', args);
+        console.log('[Media] _nativeEmit called with signal:', signal, 'args:', args);
         if (window.api && window.api.player && window.api.player[signal]) {
-            console.log('[Native] Firing signal:', signal);
+            console.log('[Media] Firing signal:', signal);
             window.api.player[signal](...args);
         } else {
-            console.error('[Native] Signal not found:', signal, 'api exists:', !!window.api);
+            console.error('[Media] Signal not found:', signal, 'api exists:', !!window.api);
         }
     };
     window._nativeUpdatePosition = function(ms) {
@@ -346,17 +346,17 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
         playerState.duration = ms;
         window.api.player.updateDuration(ms);
     };
-    // Native emitters for MPRIS control commands
+    // Native emitters for media session control commands
     window._nativeHostInput = function(actions) {
-        console.log('[Native] _nativeHostInput:', actions);
+        console.log('[Media] _nativeHostInput:', actions);
         window.api.input.hostInput(actions);
     };
     window._nativeSetRate = function(rate) {
-        console.log('[Native] _nativeSetRate:', rate);
+        console.log('[Media] _nativeSetRate:', rate);
         window.api.input.rateChanged(rate);
     };
     window._nativeSeek = function(positionMs) {
-        console.log('[Native] _nativeSeek:', positionMs);
+        console.log('[Media] _nativeSeek:', positionMs);
         window.api.input.positionSeek(positionMs);
         // Update position immediately and set rate to 0 during buffering
         if (window.jmpNative) {
@@ -454,7 +454,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     window.initCompleted = Promise.resolve();
     window.apiPromise = Promise.resolve(window.api);
 
-    console.log('[Native] Native shim installed');
+    console.log('[Media] Native shim installed');
 })();
 )JS";
 
@@ -564,7 +564,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 }
                 this.startTimeUpdateTimer();
                 this.events.trigger(this, 'playing');
-                console.log('[MPV] playing event triggered');
+                console.log('[Media] [MPV] playing event triggered');
             };
             this.onPause = () => {
                 this._paused = true;
@@ -573,7 +573,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             };
             this.onError = (error) => {
                 this.removeMediaDialog();
-                console.error('media error:', error);
+                console.error('[Media] media error:', error);
                 this.events.trigger(this, 'error', [{ type: 'mediadecodeerror' }]);
             };
             this.onDuration = (duration) => {
@@ -584,14 +584,14 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
         currentSrc() { return this._currentSrc; }
 
         async play(options) {
-            console.log('[MPV] play() called with options:', options);
+            console.log('[Media] [MPV] play() called with options:', options);
             this._started = false;
             this._timeUpdated = false;
             this._currentTime = null;
             this._endedPending = false;  // Reset for new playback
             if (options.fullscreen) this.loading.show();
             await this.createMediaElement(options);
-            console.log('[MPV] createMediaElement done, calling setCurrentSrc');
+            console.log('[Media] [MPV] createMediaElement done, calling setCurrentSrc');
             return await this.setCurrentSrc(options);
         }
 
@@ -603,7 +603,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             return new Promise((resolve) => {
                 const val = options.url;
                 this._currentSrc = val;
-                console.log('[MPV] Playing:', val);
+                console.log('[Media] [MPV] Playing:', val);
 
                 const ms = (options.playerStartPositionTicks || 0) / 10000;
                 this._currentPlayOptions = options;
@@ -772,7 +772,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
         setPlaybackRate(value) {
             this._playRate = +value;
             window.api.player.setPlaybackRate(this._playRate * 1000);
-            // Notify MPRIS directly (like jellyfin-desktop)
+            // Notify media session directly (like jellyfin-desktop)
             if (window.jmpNative) window.jmpNative.notifyRateChange(this._playRate);
         }
         getPlaybackRate() { return this._playRate || 1; }
@@ -808,8 +808,8 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     }
 
     window._mpvVideoPlayer = mpvVideoPlayer;
-    console.log('[Native] mpvVideoPlayer class installed, window.mpvVideoPlayer:', typeof window.mpvVideoPlayer);
-    console.log('[Native] window._mpvVideoPlayer:', typeof window._mpvVideoPlayer);
+    console.log('[Media] mpvVideoPlayer class installed, window.mpvVideoPlayer:', typeof window.mpvVideoPlayer);
+    console.log('[Media] window._mpvVideoPlayer:', typeof window._mpvVideoPlayer);
 })();
 )JS";
 
@@ -832,13 +832,13 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
         canPlayItem(item) { return this.canPlayMediaType(item.MediaType); }
     }
     window._mpvAudioPlayer = mpvAudioPlayer;
-    console.log('[Native] mpvAudioPlayer plugin installed');
+    console.log('[Media] mpvAudioPlayer plugin installed');
 })();
 )JS";
 
     frame->ExecuteJavaScript(mpv_audio_player, frame->GetURL(), 0);
 
-    // Input plugin for MPRIS notifications (receives playbackManager from jellyfin-web)
+    // Input plugin for media session notifications (receives playbackManager from jellyfin-web)
     const char* input_plugin = R"JS(
 (function() {
     class inputPlugin {
@@ -853,7 +853,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             this.pendingArtworkUrl = null;       // Track pending request to avoid duplicates
             this.attachedPlayer = null;          // Currently attached player for event cleanup
 
-            console.log('[MPRIS] inputPlugin constructed with playbackManager:', !!playbackManager);
+            console.log('[Media] inputPlugin constructed with playbackManager:', !!playbackManager);
 
             if (playbackManager && window.Events) {
                 this.setupEvents(playbackManager);
@@ -874,7 +874,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 RunTimeTicks: item.RunTimeTicks || 0,
                 Id: item.Id || ''
             };
-            console.log('[MPRIS] notifyMetadata:', meta.Name);
+            console.log('[Media] notifyMetadata:', meta.Name);
             window.jmpNative.notifyMetadata(JSON.stringify(meta));
 
             // Fetch album art and send as data URI
@@ -933,13 +933,13 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
             const imageUrl = this.getImageUrl(item, baseUrl);
             if (!imageUrl) {
-                console.log('[MPRIS] No album art URL found');
+                console.log('[Media] No album art URL found');
                 return;
             }
 
             // Skip if same URL is already pending
             if (imageUrl === this.pendingArtworkUrl) {
-                console.log('[MPRIS] Album art already pending for:', imageUrl);
+                console.log('[Media] Album art already pending for:', imageUrl);
                 return;
             }
 
@@ -947,7 +947,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             this.artworkAbortController = new AbortController();
             const signal = this.artworkAbortController.signal;
 
-            console.log('[MPRIS] Fetching album art:', imageUrl);
+            console.log('[Media] Fetching album art:', imageUrl);
 
             fetch(imageUrl, { signal })
                 .then(response => {
@@ -959,7 +959,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                     reader.onloadend = () => {
                         if (signal.aborted) return;
                         const dataUri = reader.result;
-                        console.log('[MPRIS] Album art fetched, sending data URI');
+                        console.log('[Media] Album art fetched, sending data URI');
                         window.jmpNative.notifyArtwork(dataUri);
                         this.pendingArtworkUrl = null;
                     };
@@ -967,9 +967,9 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 })
                 .catch(err => {
                     if (err.name === 'AbortError') {
-                        console.log('[MPRIS] Album art fetch aborted');
+                        console.log('[Media] Album art fetch aborted');
                     } else {
-                        console.log('[MPRIS] Album art fetch failed:', err.message);
+                        console.log('[Media] Album art fetch failed:', err.message);
                     }
                     this.pendingArtworkUrl = null;
                 });
@@ -1015,7 +1015,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             const drift = actual - expected;
 
             if (Math.abs(drift) > 2000) {
-                console.log('[MPRIS] Position drift detected: expected=' + Math.floor(expected) + ' actual=' + Math.floor(actual) + ' drift=' + Math.floor(drift));
+                console.log('[Media] Position drift detected: expected=' + Math.floor(expected) + ' actual=' + Math.floor(actual) + ' drift=' + Math.floor(drift));
                 if (drift > 0) {
                     // Position ahead of expected - seek forward detected
                     window.jmpNative.notifySeek(Math.floor(actual));
@@ -1047,7 +1047,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 // Only update if we have valid queue data - don't overwrite good values with bad
                 if (!playlist || !Array.isArray(playlist) || playlist.length === 0 ||
                     currentIndex === undefined || currentIndex === null || currentIndex < 0) {
-                    console.log('[MPRIS] updateQueueState: queue invalid (idx=' + currentIndex + ' len=' + (playlist?.length || 0) + '), keeping last state');
+                    console.log('[Media] updateQueueState: queue invalid (idx=' + currentIndex + ' len=' + (playlist?.length || 0) + '), keeping last state');
                     return;
                 }
 
@@ -1057,21 +1057,21 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 const isMusic = state?.NowPlayingItem?.MediaType === 'Audio';
                 const canPrev = isMusic ? true : (currentIndex > 0);
 
-                console.log('[MPRIS] updateQueueState: idx=' + currentIndex + ' len=' + playlist.length + ' canNext=' + canNext + ' canPrev=' + canPrev);
+                console.log('[Media] updateQueueState: idx=' + currentIndex + ' len=' + playlist.length + ' canNext=' + canNext + ' canPrev=' + canPrev);
                 window.jmpNative.notifyQueueChange(canNext, canPrev);
             } catch (e) {
-                console.error('[MPRIS] updateQueueState error:', e);
+                console.error('[Media] updateQueueState error:', e);
             }
         }
 
         setupEvents(pm) {
-            console.log('[MPRIS] Setting up playbackManager events');
+            console.log('[Media] Setting up playbackManager events');
             const self = this;
 
-            // Outgoing: playbackManager events -> MPRIS
+            // Outgoing: playbackManager events -> media session
             // playbackstart fires when a new playback session begins
             window.Events.on(pm, 'playbackstart', (e, player) => {
-                console.log('[MPRIS] playbackstart event, player:', !!player);
+                console.log('[Media] playbackstart event, player:', !!player);
 
                 // Get state from playbackManager (not passed as argument)
                 const state = pm.getPlayerState ? pm.getPlayerState() : null;
@@ -1083,7 +1083,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
                 // 'playing' event fires BEFORE playbackstart, so send Playing state now
                 // and start position updates (reports initial position + initializes drift tracking)
-                console.log('[MPRIS] Sending Playing state from playbackstart');
+                console.log('[Media] Sending Playing state from playbackstart');
                 if (window.jmpNative) window.jmpNative.notifyPlaybackState('Playing');
                 self.startPositionUpdates();
                 self.updateQueueState();
@@ -1101,7 +1101,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
                     // 'playing' fires on resume from pause and after track change
                     window.Events.on(player, 'playing', () => {
-                        console.log('[MPRIS] player.playing event');
+                        console.log('[Media] player.playing event');
                         if (window.jmpNative) window.jmpNative.notifyPlaybackState('Playing');
                         self.updateQueueState();
 
@@ -1119,7 +1119,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
                     // 'pause' fires when playback pauses
                     window.Events.on(player, 'pause', () => {
-                        console.log('[MPRIS] player.pause event');
+                        console.log('[Media] player.pause event');
                         if (window.jmpNative) {
                             window.jmpNative.notifyPlaybackState('Paused');
                             const pos = pm.currentTime ? pm.currentTime() : 0;
@@ -1132,7 +1132,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                     // 'ratechange' fires when playback rate changes
                     window.Events.on(player, 'ratechange', () => {
                         const rate = player.getPlaybackRate ? player.getPlaybackRate() : 1.0;
-                        console.log('[MPRIS] player.ratechange event, rate:', rate);
+                        console.log('[Media] player.ratechange event, rate:', rate);
                         if (window.jmpNative) {
                             window.jmpNative.notifyRateChange(rate);
                             const pos = pm.currentTime ? pm.currentTime() : 0;
@@ -1152,17 +1152,17 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
             // Global playbackstop fires when user exits player or playback ends
             window.Events.on(pm, 'playbackstop', (e, stopInfo) => {
-                console.log('[MPRIS] playbackstop event, stopInfo:', JSON.stringify(stopInfo));
+                console.log('[Media] playbackstop event, stopInfo:', JSON.stringify(stopInfo));
                 self.stopPositionUpdates();
 
                 // Check if navigating to next item or truly stopping
                 const isNavigating = !!(stopInfo && stopInfo.nextMediaType);
                 if (!isNavigating) {
                     // Truly stopped - clear metadata and state
-                    console.log('[MPRIS] Playback truly stopped, clearing state');
+                    console.log('[Media] Playback truly stopped, clearing state');
                     if (window.jmpNative) window.jmpNative.notifyPlaybackState('Stopped');
                 } else {
-                    console.log('[MPRIS] Navigating to next item, keeping metadata');
+                    console.log('[Media] Navigating to next item, keeping metadata');
                 }
                 // Only update queue state after we know if we're stopping or navigating
                 self.updateQueueState();
@@ -1173,7 +1173,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
             window.Events.on(pm, 'playlistitemadd', () => self.updateQueueState());
             window.Events.on(pm, 'playlistitemchange', () => self.updateQueueState());
 
-            // Action remap table (MPRIS actions -> jellyfin-web inputManager commands)
+            // Action remap table (media session actions -> jellyfin-web inputManager commands)
             const remap = {
                 'play_pause': 'playpause',
                 'play': 'play',
@@ -1185,23 +1185,23 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                 'seek_backward': 'rewind'
             };
 
-            // Incoming: MPRIS commands -> inputManager
+            // Incoming: media session commands -> inputManager
             window.api.input.hostInput.connect((actions) => {
-                console.log('[MPRIS] hostInput received:', actions);
+                console.log('[Media] hostInput received:', actions);
                 actions.forEach(action => {
                     // Remap action name if needed
                     const mappedAction = remap[action] || action;
-                    console.log('[MPRIS] Sending to inputManager:', mappedAction);
+                    console.log('[Media] Sending to inputManager:', mappedAction);
                     if (self.inputManager && typeof self.inputManager.handleCommand === 'function') {
                         self.inputManager.handleCommand(mappedAction, {});
                     } else {
-                        console.log('[MPRIS] inputManager.handleCommand not available, inputManager:', !!self.inputManager);
+                        console.log('[Media] inputManager.handleCommand not available, inputManager:', !!self.inputManager);
                     }
                 });
             });
 
             window.api.input.positionSeek.connect((positionMs) => {
-                console.log('[MPRIS] positionSeek received:', positionMs);
+                console.log('[Media] positionSeek received:', positionMs);
                 const currentPlayer = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
                 if (currentPlayer) {
                     // Duration from playbackManager is in Jellyfin ticks (1 tick = 100ns)
@@ -1210,22 +1210,22 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                     const duration = pm.duration ? pm.duration() : 0;
                     if (duration > 0) {
                         const percent = (positionMs * 10000) / duration * 100;
-                        console.log('[MPRIS] Seeking to', percent.toFixed(2), '% (', positionMs, 'ms of', duration, 'ticks)');
+                        console.log('[Media] Seeking to', percent.toFixed(2), '% (', positionMs, 'ms of', duration, 'ticks)');
                         pm.seekPercent(percent, currentPlayer);
                     }
                 }
             });
 
-            // MPRIS rate change -> player
+            // media session rate change -> player
             window.api.input.rateChanged.connect((rate) => {
-                console.log('[MPRIS] rateChanged received:', rate);
+                console.log('[Media] rateChanged received:', rate);
                 const currentPlayer = pm.getCurrentPlayer ? pm.getCurrentPlayer() : pm._currentPlayer;
                 if (currentPlayer && typeof currentPlayer.setPlaybackRate === 'function') {
                     currentPlayer.setPlaybackRate(rate);
                 }
             });
 
-            console.log('[MPRIS] Events setup complete');
+            console.log('[Media] Events setup complete');
         }
 
         destroy() {
@@ -1252,7 +1252,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     }
 
     window._inputPlugin = inputPlugin;
-    console.log('[Native] inputPlugin class installed');
+    console.log('[Media] inputPlugin class installed');
 })();
 )JS";
 

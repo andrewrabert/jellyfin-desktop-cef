@@ -30,7 +30,8 @@ void activateMacWindow();
 #else
 #include "context/egl_context.h"
 #include "platform/wayland_subsurface.h"
-#include "player/mpris/media_session.h"
+#include "player/media_session.h"
+#include "player/mpris/media_session_mpris.h"
 #include "compositor/opengl_compositor.h"
 #endif
 #include "player/mpv/mpv_player_vk.h"
@@ -431,42 +432,43 @@ int main(int argc, char* argv[]) {
     std::vector<PlayerCmd> pending_cmds;
 
 #ifndef __APPLE__
-    // Initialize MPRIS media session
+    // Initialize media session with platform backend
     MediaSession mediaSession;
+    mediaSession.addBackend(createMprisBackend(&mediaSession));
     mediaSession.onPlay = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_action", "play", 0, 0.0});
+        pending_cmds.push_back({"media_action", "play", 0, 0.0});
     };
     mediaSession.onPause = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_action", "pause", 0, 0.0});
+        pending_cmds.push_back({"media_action", "pause", 0, 0.0});
     };
     mediaSession.onPlayPause = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_action", "play_pause", 0, 0.0});
+        pending_cmds.push_back({"media_action", "play_pause", 0, 0.0});
     };
     mediaSession.onStop = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_action", "stop", 0, 0.0});
+        pending_cmds.push_back({"media_action", "stop", 0, 0.0});
     };
     mediaSession.onSeek = [&](int64_t position_us) {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_seek", "", static_cast<int>(position_us / 1000), 0.0});
+        pending_cmds.push_back({"media_seek", "", static_cast<int>(position_us / 1000), 0.0});
     };
     mediaSession.onNext = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_action", "next", 0, 0.0});
+        pending_cmds.push_back({"media_action", "next", 0, 0.0});
     };
     mediaSession.onPrevious = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_action", "previous", 0, 0.0});
+        pending_cmds.push_back({"media_action", "previous", 0, 0.0});
     };
     mediaSession.onRaise = [&]() {
         SDL_RaiseWindow(window);
     };
     mediaSession.onSetRate = [&](double rate) {
         std::lock_guard<std::mutex> lock(cmd_mutex);
-        pending_cmds.push_back({"mpris_rate", "", 0, rate});
+        pending_cmds.push_back({"media_rate", "", 0, rate});
     };
 #endif
 
@@ -743,7 +745,7 @@ int main(int argc, char* argv[]) {
         }
 
 #ifndef __APPLE__
-        // Process MPRIS D-Bus events
+        // Process media session events
         mediaSession.update();
 #endif
 
@@ -976,7 +978,7 @@ int main(int argc, char* argv[]) {
                     double startSec = static_cast<double>(cmd.intArg) / 1000.0;
                     std::cerr << "[MAIN] playerLoad: " << cmd.url << " start=" << startSec << "s" << std::endl;
 #ifndef __APPLE__
-                    // Parse and set metadata for MPRIS
+                    // Parse and set media session metadata
                     if (!cmd.metadata.empty() && cmd.metadata != "{}") {
                         MediaMetadata meta = parseMetadataJson(cmd.metadata);
                         std::cerr << "[MAIN] metadata: title=" << meta.title << " artist=" << meta.artist << std::endl;
@@ -1029,14 +1031,14 @@ int main(int argc, char* argv[]) {
                     bool enable = cmd.intArg != 0;
                     SDL_SetWindowFullscreen(window, enable);
 #ifndef __APPLE__
-                } else if (cmd.cmd == "mpris_metadata") {
+                } else if (cmd.cmd == "media_metadata") {
                     MediaMetadata meta = parseMetadataJson(cmd.url);
-                    std::cerr << "[MAIN] MPRIS metadata: title=" << meta.title << std::endl;
+                    std::cerr << "[MAIN] Media metadata: title=" << meta.title << std::endl;
                     mediaSession.setMetadata(meta);
-                } else if (cmd.cmd == "mpris_position") {
+                } else if (cmd.cmd == "media_position") {
                     int64_t pos_us = static_cast<int64_t>(cmd.intArg) * 1000;
                     mediaSession.setPosition(pos_us);
-                } else if (cmd.cmd == "mpris_state") {
+                } else if (cmd.cmd == "media_state") {
                     if (cmd.url == "Playing") {
                         mediaSession.setPlaybackState(PlaybackState::Playing);
                     } else if (cmd.url == "Paused") {
@@ -1044,34 +1046,34 @@ int main(int argc, char* argv[]) {
                     } else {
                         mediaSession.setPlaybackState(PlaybackState::Stopped);
                     }
-                } else if (cmd.cmd == "mpris_artwork") {
-                    std::cerr << "[MAIN] MPRIS artwork received: " << cmd.url.substr(0, 50) << "..." << std::endl;
+                } else if (cmd.cmd == "media_artwork") {
+                    std::cerr << "[MAIN] Media artwork received: " << cmd.url.substr(0, 50) << "..." << std::endl;
                     mediaSession.setArtwork(cmd.url);
-                } else if (cmd.cmd == "mpris_queue") {
+                } else if (cmd.cmd == "media_queue") {
                     // Decode flags: bit 0 = canNext, bit 1 = canPrev
                     bool canNext = (cmd.intArg & 1) != 0;
                     bool canPrev = (cmd.intArg & 2) != 0;
                     mediaSession.setCanGoNext(canNext);
                     mediaSession.setCanGoPrevious(canPrev);
-                } else if (cmd.cmd == "mpris_notify_rate") {
+                } else if (cmd.cmd == "media_notify_rate") {
                     // Rate was encoded as rate * 1000000
                     double rate = static_cast<double>(cmd.intArg) / 1000000.0;
                     current_playback_rate = rate;
                     mediaSession.setRate(rate);
-                } else if (cmd.cmd == "mpris_seeked") {
-                    // JS detected a seek - emit Seeked signal to MPRIS
+                } else if (cmd.cmd == "media_seeked") {
+                    // JS detected a seek - emit Seeked signal to media session
                     int64_t pos_us = static_cast<int64_t>(cmd.intArg) * 1000;
                     mediaSession.emitSeeked(pos_us);
-                } else if (cmd.cmd == "mpris_action") {
-                    // Route MPRIS control commands to JS playbackManager
+                } else if (cmd.cmd == "media_action") {
+                    // Route media session control commands to JS playbackManager
                     std::string js = "if(window._nativeHostInput) window._nativeHostInput(['" + cmd.url + "']);";
                     client->executeJS(js);
-                } else if (cmd.cmd == "mpris_seek") {
-                    // Route MPRIS seek to JS playbackManager
+                } else if (cmd.cmd == "media_seek") {
+                    // Route media session seek to JS playbackManager
                     std::string js = "if(window._nativeSeek) window._nativeSeek(" + std::to_string(cmd.intArg) + ");";
                     client->executeJS(js);
-                } else if (cmd.cmd == "mpris_rate") {
-                    // Route MPRIS rate change to JS player
+                } else if (cmd.cmd == "media_rate") {
+                    // Route media session rate change to JS player
                     client->emitRateChanged(cmd.doubleArg);
 #endif
                 }
