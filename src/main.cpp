@@ -20,7 +20,7 @@
 // Initialize CEF-compatible NSApplication before SDL
 void initMacApplication();
 // Activate window for keyboard focus after SDL window creation
-void activateMacWindow();
+void activateMacWindow(SDL_Window* window);
 #endif
 
 #ifdef __APPLE__
@@ -266,8 +266,8 @@ int main(int argc, char* argv[]) {
     SDL_StartTextInput(window);
 
 #ifdef __APPLE__
-    // Ensure window has keyboard focus after creation
-    activateMacWindow();
+    // Window activation is deferred until first WINDOW_EXPOSED event
+    // to ensure the window is actually visible before activating
 #endif
 
 #ifdef __APPLE__
@@ -634,6 +634,7 @@ int main(int argc, char* argv[]) {
     int current_height = height;
     bool video_ready = false;  // Latches true once first frame renders
 #ifdef __APPLE__
+    bool window_activated = false;  // Activate window on first expose event
     auto last_cef_work = Clock::now();
     // Calculate pump interval based on display refresh rate (e.g., 8ms for 120Hz, 16ms for 60Hz)
     int cef_pump_interval_ms = (mode && mode->refresh_rate > 0) ? static_cast<int>(1000.0f / mode->refresh_rate) : 16;
@@ -862,6 +863,12 @@ int main(int argc, char* argv[]) {
                 } else {
                     client->sendFocus(false);
                 }
+#ifdef __APPLE__
+            } else if (event.type == SDL_EVENT_WINDOW_EXPOSED && !window_activated) {
+                // Activate window once it's actually visible on screen
+                activateMacWindow(window);
+                window_activated = true;
+#endif
             } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
                 auto resize_start = std::chrono::steady_clock::now();
                 current_width = event.window.data1;

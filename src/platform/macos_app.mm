@@ -3,6 +3,7 @@
 
 #import <Cocoa/Cocoa.h>
 #include "include/cef_application_mac.h"
+#include <SDL3/SDL.h>
 
 @interface JellyfinApplication : NSApplication <CefAppProtocol> {
     BOOL handlingSendEvent_;
@@ -46,18 +47,22 @@ void initMacApplication() {
     [appMenuItem setSubmenu:appMenu];
     [NSApp setMainMenu:menubar];
 
-    // Activate the app and bring to front
-    [NSApp activateIgnoringOtherApps:YES];
+    // NOTE: Don't activate here - this runs in helper processes too.
+    // Activation happens in activateMacWindow() for main process only.
 
     NSLog(@"NSApplication class: %@", NSStringFromClass([NSApp class]));
     NSLog(@"Conforms to CefAppProtocol: %@", [NSApp conformsToProtocol:@protocol(CefAppProtocol)] ? @"YES" : @"NO");
 }
 
 // Call this after SDL window is created to ensure it can receive keyboard input
-void activateMacWindow() {
+void activateMacWindow(SDL_Window* window) {
     [NSApp activateIgnoringOtherApps:YES];
-    // Make the key window (SDL should have set this, but ensure it)
-    if ([NSApp mainWindow]) {
-        [[NSApp mainWindow] makeKeyAndOrderFront:nil];
+
+    // Get NSWindow directly from SDL (don't rely on [NSApp mainWindow] being set yet)
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    NSWindow* ns_window = (__bridge NSWindow*)SDL_GetPointerProperty(
+        props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+    if (ns_window) {
+        [ns_window makeKeyAndOrderFront:nil];
     }
 }
