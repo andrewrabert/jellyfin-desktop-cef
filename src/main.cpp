@@ -815,7 +815,6 @@ int main(int argc, char* argv[]) {
                 int x = static_cast<int>(event.button.x);
                 int y = static_cast<int>(event.button.y);
                 int btn = event.button.button;
-                std::cerr << "[SDL] Button DOWN: " << btn << " at " << x << "," << y << std::endl;
                 Uint64 now_ticks = SDL_GetTicks();
 
                 int dx = x - last_click_x;
@@ -905,7 +904,6 @@ int main(int argc, char* argv[]) {
             } else if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
                 bool down = (event.type == SDL_EVENT_KEY_DOWN);
                 SDL_Keycode key = event.key.key;
-                std::cerr << "[SDL] KEY " << (down ? "DOWN" : "UP") << ": key=0x" << std::hex << key << std::dec << " mods=" << mods << std::endl;
                 bool is_control_key = (key == SDLK_BACKSPACE || key == SDLK_DELETE ||
                     key == SDLK_RETURN || key == SDLK_ESCAPE || key == SDLK_SPACE ||
                     key == SDLK_TAB || key == SDLK_LEFT || key == SDLK_RIGHT ||
@@ -926,7 +924,6 @@ int main(int argc, char* argv[]) {
                     }
                 }
             } else if (event.type == SDL_EVENT_TEXT_INPUT) {
-                std::cerr << "[SDL] TEXT_INPUT: \"" << event.text.text << "\"" << std::endl;
                 for (const char* c = event.text.text; *c; ++c) {
                     if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
                         overlay_client->sendChar(static_cast<unsigned char>(*c), mods);
