@@ -6,6 +6,8 @@
 #include <memory>
 #include <vector>
 
+enum class MediaType { Unknown, Audio, Video };
+
 struct MediaMetadata {
     std::string title;
     std::string artist;
@@ -14,6 +16,7 @@ struct MediaMetadata {
     int64_t duration_us = 0;
     std::string art_url;       // Jellyfin URL
     std::string art_data_uri;  // base64 data URI after fetch
+    MediaType media_type = MediaType::Unknown;
 };
 
 enum class PlaybackState { Stopped, Playing, Paused };

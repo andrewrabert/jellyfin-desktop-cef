@@ -173,6 +173,13 @@ MediaMetadata parseMetadataJson(const std::string& json) {
     meta.track_number = static_cast<int>(jsonGetInt(json, "IndexNumber"));
     // RunTimeTicks is in 100ns units, convert to microseconds
     meta.duration_us = jsonGetInt(json, "RunTimeTicks") / 10;
+    // Detect media type from Type field
+    std::string type = jsonGetString(json, "Type");
+    if (type == "Audio") {
+        meta.media_type = MediaType::Audio;
+    } else if (type == "Movie" || type == "Episode" || type == "Video" || type == "MusicVideo") {
+        meta.media_type = MediaType::Video;
+    }
     return meta;
 }
 

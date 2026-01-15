@@ -98,27 +98,21 @@ MacOSMediaBackend::MacOSMediaBackend(MediaSession* session) : session_(session) 
     delegate_ = (__bridge_retained void*)[[MediaKeysDelegate alloc] initWithBackend:this];
 
     // Load private MediaRemote.framework functions for visibility control
-    if (auto lib = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_NOW)) {
+    media_remote_lib_ = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_NOW);
+    if (media_remote_lib_) {
         SetNowPlayingVisibility_ = reinterpret_cast<SetNowPlayingVisibilityFunc>(
-            dlsym(lib, "MRMediaRemoteSetNowPlayingVisibility"));
+            dlsym(media_remote_lib_, "MRMediaRemoteSetNowPlayingVisibility"));
         GetLocalOrigin_ = reinterpret_cast<GetLocalOriginFunc>(
-            dlsym(lib, "MRMediaRemoteGetLocalOrigin"));
+            dlsym(media_remote_lib_, "MRMediaRemoteGetLocalOrigin"));
         SetCanBeNowPlayingApplication_ = reinterpret_cast<SetCanBeNowPlayingApplicationFunc>(
-            dlsym(lib, "MRMediaRemoteSetCanBeNowPlayingApplication"));
-
-        std::cerr << "[macOS Media] MediaRemote functions: SetVisibility=" << (SetNowPlayingVisibility_ ? "yes" : "no")
-                  << " GetOrigin=" << (GetLocalOrigin_ ? "yes" : "no")
-                  << " SetCanBe=" << (SetCanBeNowPlayingApplication_ ? "yes" : "no") << std::endl;
+            dlsym(media_remote_lib_, "MRMediaRemoteSetCanBeNowPlayingApplication"));
 
         if (SetCanBeNowPlayingApplication_) {
             SetCanBeNowPlayingApplication_(1);
-            std::cerr << "[macOS Media] SetCanBeNowPlayingApplication(1) called" << std::endl;
         }
     } else {
         std::cerr << "[macOS Media] Failed to load MediaRemote.framework" << std::endl;
     }
-
-    std::cerr << "[macOS Media] Initialized Now Playing integration" << std::endl;
 }
 
 MacOSMediaBackend::~MacOSMediaBackend() {
@@ -128,6 +122,11 @@ MacOSMediaBackend::~MacOSMediaBackend() {
     if (delegate_) {
         CFRelease(delegate_);
         delegate_ = nullptr;
+    }
+
+    if (media_remote_lib_) {
+        dlclose(media_remote_lib_);
+        media_remote_lib_ = nullptr;
     }
 }
 
@@ -142,7 +141,6 @@ static MPNowPlayingPlaybackState convertState(PlaybackState state) {
 
 void MacOSMediaBackend::setMetadata(const MediaMetadata& meta) {
     metadata_ = meta;
-    std::cerr << "[macOS Media] setMetadata: " << meta.title << std::endl;
     updateNowPlayingInfo();
 }
 
@@ -178,15 +176,15 @@ void MacOSMediaBackend::setArtwork(const std::string& dataUri) {
 
 void MacOSMediaBackend::setPlaybackState(PlaybackState state) {
     state_ = state;
-    const char* stateStr = (state == PlaybackState::Playing) ? "Playing" :
-                           (state == PlaybackState::Paused) ? "Paused" : "Stopped";
-    std::cerr << "[macOS Media] setPlaybackState: " << stateStr << std::endl;
 
     // Clear metadata when stopped
     if (state == PlaybackState::Stopped) {
         metadata_ = MediaMetadata{};
         position_us_ = 0;
         [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
+        [MPRemoteCommandCenter sharedCommandCenter].changePlaybackPositionCommand.enabled = NO;
+    } else {
+        [MPRemoteCommandCenter sharedCommandCenter].changePlaybackPositionCommand.enabled = YES;
     }
 
     [MPNowPlayingInfoCenter defaultCenter].playbackState = convertState(state);
@@ -194,7 +192,6 @@ void MacOSMediaBackend::setPlaybackState(PlaybackState state) {
     // Update visibility using private API
     if (SetNowPlayingVisibility_ && GetLocalOrigin_) {
         void* origin = GetLocalOrigin_();
-        std::cerr << "[macOS Media] Setting visibility, origin=" << origin << std::endl;
         if (state == PlaybackState::Stopped) {
             SetNowPlayingVisibility_(origin, MRNowPlayingClientVisibilityNeverVisible);
         } else {
@@ -208,12 +205,20 @@ void MacOSMediaBackend::setPlaybackState(PlaybackState state) {
 void MacOSMediaBackend::setPosition(int64_t position_us) {
     position_us_ = position_us;
 
-    if (pending_update_) {
-        NSMutableDictionary* info = [NSMutableDictionary
-            dictionaryWithDictionary:[MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo];
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_position_update_).count();
+
+    // Update if pending (state change) or if >= 1 second since last update
+    if (pending_update_ || elapsed >= 1000) {
+        NSDictionary* existing = [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo;
+        if (!existing) return;
+
+        NSMutableDictionary* info = [NSMutableDictionary dictionaryWithDictionary:existing];
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] =
             @(static_cast<double>(position_us) / 1000000.0);
         [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
+        last_position_update_ = now;
         pending_update_ = false;
     }
 }
@@ -232,16 +237,20 @@ void MacOSMediaBackend::setCanGoPrevious(bool can) {
 
 void MacOSMediaBackend::setRate(double rate) {
     rate_ = rate;
-    NSMutableDictionary* info = [NSMutableDictionary
-        dictionaryWithDictionary:[MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo];
+    NSDictionary* existing = [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo;
+    if (!existing) return;
+
+    NSMutableDictionary* info = [NSMutableDictionary dictionaryWithDictionary:existing];
     info[MPNowPlayingInfoPropertyPlaybackRate] = @(rate);
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
 }
 
 void MacOSMediaBackend::emitSeeked(int64_t position_us) {
     position_us_ = position_us;
-    NSMutableDictionary* info = [NSMutableDictionary
-        dictionaryWithDictionary:[MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo];
+    NSDictionary* existing = [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo;
+    if (!existing) return;
+
+    NSMutableDictionary* info = [NSMutableDictionary dictionaryWithDictionary:existing];
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] =
         @(static_cast<double>(position_us) / 1000000.0);
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
@@ -290,11 +299,21 @@ void MacOSMediaBackend::updateNowPlayingInfo() {
     // Playback rate
     info[MPNowPlayingInfoPropertyPlaybackRate] = @(rate_);
 
-    // Media type - assume video for now (most Jellyfin content)
-    info[MPNowPlayingInfoPropertyMediaType] = @(MPNowPlayingInfoMediaTypeVideo);
+    // Media type from metadata
+    MPNowPlayingInfoMediaType mpMediaType;
+    switch (metadata_.media_type) {
+        case MediaType::Audio:
+            mpMediaType = MPNowPlayingInfoMediaTypeAudio;
+            break;
+        case MediaType::Video:
+        case MediaType::Unknown:
+        default:
+            mpMediaType = MPNowPlayingInfoMediaTypeVideo;
+            break;
+    }
+    info[MPNowPlayingInfoPropertyMediaType] = @(mpMediaType);
 
     [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = info;
-    std::cerr << "[macOS Media] Updated now playing info: " << metadata_.title << std::endl;
 }
 
 std::unique_ptr<MediaSessionBackend> createMacOSMediaBackend(MediaSession* session) {

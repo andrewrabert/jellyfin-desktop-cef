@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include "player/media_session.h"
 
 class MacOSMediaBackend : public MediaSessionBackend {
@@ -26,12 +27,14 @@ private:
 
     MediaSession* session_;
     void* delegate_ = nullptr;  // MediaKeysDelegate (Obj-C)
+    void* media_remote_lib_ = nullptr;  // dlopen handle for MediaRemote.framework
 
     MediaMetadata metadata_;
     PlaybackState state_ = PlaybackState::Stopped;
     int64_t position_us_ = 0;
     double rate_ = 1.0;
     bool pending_update_ = false;
+    std::chrono::steady_clock::time_point last_position_update_;
 
     // Private MediaRemote.framework function pointers
     typedef void (*SetNowPlayingVisibilityFunc)(void* origin, int visibility);
