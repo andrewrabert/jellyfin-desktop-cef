@@ -170,10 +170,27 @@ add_custom_command(
 )
 add_custom_target(embedded_js DEPENDS ${EMBEDDED_JS_HEADER})
 
+# Embed ALL web resources into generated header
+set(EMBEDDED_RESOURCES_HEADER ${CMAKE_BINARY_DIR}/generated/embedded_resources.h)
+file(GLOB_RECURSE WEB_RESOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/web/*")
+
+add_custom_command(
+    OUTPUT ${EMBEDDED_RESOURCES_HEADER}
+    COMMAND ${CMAKE_COMMAND}
+        -DRESOURCE_DIR="${CMAKE_SOURCE_DIR}/src/web"
+        -DOUTPUT_FILE=${EMBEDDED_RESOURCES_HEADER}
+        -DBASE_URL="resources"
+        -P ${CMAKE_SOURCE_DIR}/cmake/embed_all_resources.cmake
+    DEPENDS ${WEB_RESOURCE_FILES}
+    COMMENT "Embedding web resources"
+)
+add_custom_target(embedded_resources DEPENDS ${EMBEDDED_RESOURCES_HEADER})
+
 add_executable(jellyfin-desktop
     src/main.cpp
     src/cef/cef_app.cpp
     src/cef/cef_client.cpp
+    src/cef/resource_handler.cpp
     src/context/vulkan_context.cpp
     src/player/mpv/mpv_player_vk.cpp
     src/settings.cpp
@@ -182,7 +199,7 @@ add_executable(jellyfin-desktop
 )
 
 # Ensure JS shims are embedded before compiling cef_app.cpp
-add_dependencies(jellyfin-desktop embedded_js)
+add_dependencies(jellyfin-desktop embedded_js embedded_resources)
 
 target_include_directories(jellyfin-desktop PRIVATE
     ${CEF_INCLUDE_DIRS}
@@ -253,16 +270,7 @@ else()
     )
 endif()
 
-# Copy application resources (always sync when changed)
-file(GLOB_RECURSE RESOURCE_FILES "${CMAKE_SOURCE_DIR}/src/web/*")
-add_custom_target(copy_resources ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/src/web"
-        "${CMAKE_BINARY_DIR}/resources"
-    DEPENDS ${RESOURCE_FILES}
-    COMMENT "Copying resources"
-)
-add_dependencies(jellyfin-desktop mpv_build copy_resources)
+add_dependencies(jellyfin-desktop mpv_build)
 
 # Copy libmpv to build directory and fix install_name
 if(APPLE)

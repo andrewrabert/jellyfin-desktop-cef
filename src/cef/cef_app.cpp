@@ -1,4 +1,5 @@
 #include "cef/cef_app.h"
+#include "cef/resource_handler.h"
 #include "settings.h"
 #include "embedded_js.h"
 #include "include/cef_browser.h"
@@ -52,8 +53,17 @@ void App::OnBeforeCommandLineProcessing(const CefString& process_type,
     }
 }
 
+void App::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) {
+    registrar->AddCustomScheme("app",
+        CEF_SCHEME_OPTION_STANDARD |
+        CEF_SCHEME_OPTION_SECURE |
+        CEF_SCHEME_OPTION_LOCAL |
+        CEF_SCHEME_OPTION_CORS_ENABLED);
+}
+
 void App::OnContextInitialized() {
     std::cerr << "CEF context initialized" << std::endl;
+    CefRegisterSchemeHandlerFactory("app", "", new EmbeddedSchemeHandlerFactory());
 }
 
 void App::OnScheduleMessagePumpWork(int64_t delay_ms) {

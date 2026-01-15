@@ -594,7 +594,7 @@ int main(int argc, char* argv[]) {
     overlay_browser_settings.background_color = 0;
     overlay_browser_settings.windowless_frame_rate = browser_settings.windowless_frame_rate;
 
-    std::string overlay_html_path = "file://" + (exe_path / "resources" / "index.html").string();
+    std::string overlay_html_path = "app://resources/index.html";
     CefBrowserHost::CreateBrowser(overlay_window_info, overlay_client, overlay_html_path, overlay_browser_settings, nullptr, nullptr);
 
     // State tracking
