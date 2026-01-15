@@ -43,17 +43,21 @@ if(APPLE)
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
     find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+    find_library(MEDIAPLAYER_FRAMEWORK MediaPlayer REQUIRED)
 
     set(PLATFORM_SOURCES
         src/platform/macos_layer.mm
         src/platform/macos_app.mm
         src/compositor/metal_compositor.mm
+        src/player/media_session.cpp
+        src/player/macos/media_session_macos.mm
     )
     set(PLATFORM_LIBRARIES
         ${COCOA_FRAMEWORK}
         ${METAL_FRAMEWORK}
         ${QUARTZCORE_FRAMEWORK}
         ${IOSURFACE_FRAMEWORK}
+        ${MEDIAPLAYER_FRAMEWORK}
     )
 else()
     # Linux: OpenGL/EGL, Wayland
@@ -224,6 +228,7 @@ if(APPLE)
         src/platform/macos_layer.mm
         src/platform/macos_app.mm
         src/compositor/metal_compositor.mm
+        src/player/macos/media_session_macos.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc"
     )
 endif()

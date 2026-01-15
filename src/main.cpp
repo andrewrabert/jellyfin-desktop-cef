@@ -27,6 +27,8 @@ void activateMacWindow();
 #include <mach-o/dyld.h>
 #include "platform/macos_layer.h"
 #include "compositor/metal_compositor.h"
+#include "player/media_session.h"
+#include "player/macos/media_session_macos.h"
 #else
 #include "context/egl_context.h"
 #include "platform/wayland_subsurface.h"
@@ -155,7 +157,6 @@ std::string jsonGetFirstArrayString(const std::string& json, const std::string& 
     return result;
 }
 
-#ifndef __APPLE__
 MediaMetadata parseMetadataJson(const std::string& json) {
     MediaMetadata meta;
     meta.title = jsonGetString(json, "Name");
@@ -174,7 +175,6 @@ MediaMetadata parseMetadataJson(const std::string& json) {
     meta.duration_us = jsonGetInt(json, "RunTimeTicks") / 10;
     return meta;
 }
-#endif
 
 int main(int argc, char* argv[]) {
 #ifdef __APPLE__
@@ -438,10 +438,13 @@ int main(int argc, char* argv[]) {
     std::mutex cmd_mutex;
     std::vector<PlayerCmd> pending_cmds;
 
-#ifndef __APPLE__
     // Initialize media session with platform backend
     MediaSession mediaSession;
+#ifdef __APPLE__
+    mediaSession.addBackend(createMacOSMediaBackend(&mediaSession));
+#else
     mediaSession.addBackend(createMprisBackend(&mediaSession));
+#endif
     mediaSession.onPlay = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
         pending_cmds.push_back({"media_action", "play", 0, 0.0});
@@ -477,7 +480,6 @@ int main(int argc, char* argv[]) {
         std::lock_guard<std::mutex> lock(cmd_mutex);
         pending_cmds.push_back({"media_rate", "", 0, rate});
     };
-#endif
 
     // Overlay browser state
     enum class OverlayState { SHOWING, WAITING, FADING, HIDDEN };
@@ -633,9 +635,7 @@ int main(int argc, char* argv[]) {
 
     // Set up mpv event callbacks (event-driven like jellyfin-desktop)
     mpv.setPositionCallback([&](double ms) {
-#ifndef __APPLE__
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-#endif
     });
     mpv.setDurationCallback([&](double ms) {
         client->updateDuration(ms);
@@ -644,10 +644,8 @@ int main(int argc, char* argv[]) {
         // FILE_LOADED - initial playback start
         client->emitPlaying();
         client->updatePosition(mpv.getPosition());
-#ifndef __APPLE__
         mediaSession.setPosition(static_cast<int64_t>(mpv.getPosition() * 1000.0));
         mediaSession.setPlaybackState(PlaybackState::Playing);
-#endif
     });
     mpv.setStateCallback([&](bool paused) {
         // Ignore initial property emission before any file is loaded
@@ -658,56 +656,41 @@ int main(int argc, char* argv[]) {
         client->updatePosition(pos);
         if (paused) {
             client->emitPaused();
-#ifndef __APPLE__
             mediaSession.setPosition(static_cast<int64_t>(pos * 1000.0));
             mediaSession.setPlaybackState(PlaybackState::Paused);
-#endif
         } else {
             client->emitPlaying();
-#ifndef __APPLE__
             mediaSession.setPosition(static_cast<int64_t>(pos * 1000.0));
             mediaSession.setPlaybackState(PlaybackState::Playing);
-#endif
         }
     });
     mpv.setFinishedCallback([&]() {
         has_video = false;
         client->emitFinished();
-#ifndef __APPLE__
         mediaSession.setPlaybackState(PlaybackState::Stopped);
-#endif
     });
     mpv.setCanceledCallback([&]() {
         has_video = false;
         client->emitCanceled();
-#ifndef __APPLE__
         mediaSession.setPlaybackState(PlaybackState::Stopped);
-#endif
     });
     mpv.setSeekedCallback([&](double ms) {
         client->updatePosition(ms);
-#ifndef __APPLE__
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
         mediaSession.setRate(current_playback_rate);
         mediaSession.emitSeeked(static_cast<int64_t>(ms * 1000.0));
-#endif
     });
     mpv.setBufferingCallback([&](bool buffering, double ms) {
-#ifndef __APPLE__
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
         if (buffering) {
             mediaSession.setRate(0.0);
         } else {
             mediaSession.setRate(current_playback_rate);
         }
-#endif
     });
     mpv.setCoreIdleCallback([&](bool idle, double ms) {
-#ifndef __APPLE__
+        (void)idle;
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-#else
-        (void)idle; (void)ms;
-#endif
     });
 
     // Auto-load test video if provided via --video
@@ -751,10 +734,8 @@ int main(int argc, char* argv[]) {
             focus_set = true;
         }
 
-#ifndef __APPLE__
         // Process media session events
         mediaSession.update();
-#endif
 
         // Event-driven: wait for events when idle, poll when active
         SDL_Event event;
@@ -981,14 +962,12 @@ int main(int argc, char* argv[]) {
                 if (cmd.cmd == "load") {
                     double startSec = static_cast<double>(cmd.intArg) / 1000.0;
                     std::cerr << "[MAIN] playerLoad: " << cmd.url << " start=" << startSec << "s" << std::endl;
-#ifndef __APPLE__
                     // Parse and set media session metadata
                     if (!cmd.metadata.empty() && cmd.metadata != "{}") {
                         MediaMetadata meta = parseMetadataJson(cmd.metadata);
                         std::cerr << "[MAIN] metadata: title=" << meta.title << " artist=" << meta.artist << std::endl;
                         mediaSession.setMetadata(meta);
                     }
-#endif
                     if (mpv.loadFile(cmd.url, startSec)) {
                         has_video = true;
 #ifdef __APPLE__
@@ -1034,7 +1013,6 @@ int main(int argc, char* argv[]) {
                 } else if (cmd.cmd == "fullscreen") {
                     bool enable = cmd.intArg != 0;
                     SDL_SetWindowFullscreen(window, enable);
-#ifndef __APPLE__
                 } else if (cmd.cmd == "media_metadata") {
                     MediaMetadata meta = parseMetadataJson(cmd.url);
                     std::cerr << "[MAIN] Media metadata: title=" << meta.title << std::endl;
@@ -1079,7 +1057,6 @@ int main(int argc, char* argv[]) {
                 } else if (cmd.cmd == "media_rate") {
                     // Route media session rate change to JS player
                     client->emitRateChanged(cmd.doubleArg);
-#endif
                 }
             }
             pending_cmds.clear();
