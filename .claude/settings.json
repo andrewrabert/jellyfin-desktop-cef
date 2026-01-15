@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Skill(investigate-jellyfin-repos)",
       "Read",
       "Glob",
       "Grep",
