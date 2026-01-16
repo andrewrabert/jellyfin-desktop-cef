@@ -230,6 +230,11 @@ bool MpvPlayerVk::loadFile(const std::string& path, double startSeconds) {
         mpv_set_option_string(mpv_, "start", "0");
     }
 
+    // Clear pause state before loading - ensures playback starts
+    // (pause may persist from previous track)
+    int pause = 0;
+    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &pause);
+
     const char* cmd[] = {"loadfile", path.c_str(), nullptr};
     int ret = mpv_command(mpv_, cmd);
     if (ret >= 0) {
