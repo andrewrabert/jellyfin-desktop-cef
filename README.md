@@ -5,6 +5,7 @@ Experimental rewrite of [Jellyfin Desktop](https://github.com/jellyfin/jellyfin-
 ## Supported Platforms
 
 - **Linux** - Wayland only (no X11 support)
+  - Arch Linux (AUR): [jellyfin-desktop-cef-git](https://aur.archlinux.org/packages/jellyfin-desktop-cef-git)
 - **macOS** - Apple Silicon and Intel
 
 ## Architecture
