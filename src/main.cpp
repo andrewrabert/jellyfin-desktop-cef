@@ -545,6 +545,7 @@ int main(int argc, char* argv[]) {
         },
         [&](const std::string& url) {
             // loadServer callback - start loading main browser
+            std::cerr << "[Overlay] loadServer callback: " << url << std::endl;
             std::lock_guard<std::mutex> lock(cmd_mutex);
             pending_server_url = url;
         }
@@ -627,19 +628,19 @@ int main(int argc, char* argv[]) {
     // State tracking
     using Clock = std::chrono::steady_clock;
 
-    // Main browser: load saved server immediately, or about:blank
-    std::string main_url = Settings::instance().serverUrl();
-    if (main_url.empty()) {
-        main_url = "about:blank";
-        std::cerr << "[Overlay] State: SHOWING (no saved URL)" << std::endl;
+    // Main browser: load saved server immediately, or wait for overlay IPC
+    std::string saved_url = Settings::instance().serverUrl();
+    if (saved_url.empty()) {
+        // No saved server - create with blank, wait for overlay loadServer IPC
+        std::cerr << "[Main] Waiting for overlay to provide server URL" << std::endl;
+        CefBrowserHost::CreateBrowser(window_info, client, "about:blank", browser_settings, nullptr, nullptr);
     } else {
-        // Start fade timer since we're auto-loading saved server
+        // Have saved server - start loading immediately, begin overlay fade
         overlay_state = OverlayState::WAITING;
         overlay_fade_start = Clock::now();
-        std::cerr << "[Overlay] State: SHOWING -> WAITING (saved URL: " << main_url << ")" << std::endl;
+        std::cerr << "[Main] Loading saved server: " << saved_url << std::endl;
+        CefBrowserHost::CreateBrowser(window_info, client, saved_url, browser_settings, nullptr, nullptr);
     }
-    std::cerr << "Main browser loading: " << main_url << std::endl;
-    CefBrowserHost::CreateBrowser(window_info, client, main_url, browser_settings, nullptr, nullptr);
     auto last_activity = Clock::now();
     float overlay_alpha = 1.0f;
     int mouse_x = 0, mouse_y = 0;
@@ -1121,16 +1122,14 @@ int main(int argc, char* argv[]) {
                 // Only process if we're still showing the overlay form
                 // (ignore if already loading/fading from saved server)
                 if (overlay_state == OverlayState::SHOWING) {
-                    // Save URL to settings
+                    std::cerr << "[Main] Loading server from overlay: " << url << std::endl;
                     Settings::instance().setServerUrl(url);
                     Settings::instance().save();
-
-                    // Load in main browser
                     client->loadUrl(url);
-
-                    // Start fade timer
                     overlay_state = OverlayState::WAITING;
                     overlay_fade_start = now;
+                } else {
+                    std::cerr << "[Main] Ignoring loadServer (overlay_state != SHOWING)" << std::endl;
                 }
             }
         }

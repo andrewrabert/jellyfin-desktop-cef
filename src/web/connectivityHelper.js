@@ -1,59 +1,56 @@
-// Simple connectivity helper - pure JS implementation
+// Connectivity helper - uses native C++ for HTTP requests (no CORS issues)
 window.jmpCheckServerConnectivity = (() => {
-    let activeController = null;
+    let pendingResolve = null;
+    let pendingReject = null;
+    let pendingUrl = null;
+
+    // Called by native code when result is ready
+    window._onServerConnectivityResult = (url, success, resolvedUrl) => {
+        console.log('Connectivity result:', url, success, resolvedUrl);
+        if (pendingUrl === url) {
+            if (success) {
+                pendingResolve(resolvedUrl);
+            } else {
+                pendingReject(new Error('Connection failed'));
+            }
+            pendingResolve = null;
+            pendingReject = null;
+            pendingUrl = null;
+        }
+    };
 
     const checkFunc = async function(url) {
-        // Abort any in-progress check
-        if (activeController) {
-            activeController.abort();
+        // Wait for jmpNative
+        let attempts = 0;
+        while (!window.jmpNative?.checkServerConnectivity && attempts < 50) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            attempts++;
+        }
+        if (!window.jmpNative?.checkServerConnectivity) {
+            throw new Error('Native connectivity check not available');
         }
 
-        // Create abort controller for this check
-        const controller = new AbortController();
-        activeController = controller;
+        return new Promise((resolve, reject) => {
+            pendingResolve = resolve;
+            pendingReject = reject;
+            pendingUrl = url;
 
-        try {
             // Normalize URL
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
                 url = 'http://' + url;
             }
 
-            // Try to fetch server info
-            const infoUrl = url.replace(/\/$/, '') + '/System/Info/Public';
-            console.log('Checking connectivity:', infoUrl);
-
-            const response = await fetch(infoUrl, {
-                signal: controller.signal,
-                mode: 'cors',
-                credentials: 'omit'
-            });
-
-            if (!response.ok) {
-                throw new Error('Server returned ' + response.status);
-            }
-
-            const info = await response.json();
-            console.log('Server info:', info);
-
-            // Return the base URL (handle redirects by using response.url)
-            const resolvedUrl = new URL(response.url);
-            const baseUrl = resolvedUrl.origin + resolvedUrl.pathname.replace('/System/Info/Public', '');
-
-            activeController = null;
-            return baseUrl.replace(/\/$/, '');
-        } catch (e) {
-            activeController = null;
-            if (e.name === 'AbortError') {
-                throw new Error('Connection cancelled');
-            }
-            throw e;
-        }
+            console.log('Checking connectivity:', url);
+            window.jmpNative.checkServerConnectivity(url);
+        });
     };
 
     checkFunc.abort = () => {
-        if (activeController) {
-            activeController.abort();
-            activeController = null;
+        if (pendingReject) {
+            pendingReject(new Error('Connection cancelled'));
+            pendingResolve = null;
+            pendingReject = null;
+            pendingUrl = null;
         }
     };
 

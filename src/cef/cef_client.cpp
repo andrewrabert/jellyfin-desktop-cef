@@ -1,10 +1,70 @@
 #include "cef/cef_client.h"
 #include "ui/menu_overlay.h"
 #include "settings.h"
+#include "include/cef_urlrequest.h"
 #include <iostream>
 #ifndef __APPLE__
 #include <unistd.h>  // For dup()
 #endif
+
+// URL request client for server connectivity checks
+class ConnectivityURLRequestClient : public CefURLRequestClient {
+public:
+    ConnectivityURLRequestClient(CefRefPtr<CefBrowser> browser, const std::string& originalUrl)
+        : browser_(browser), original_url_(originalUrl) {}
+
+    void OnRequestComplete(CefRefPtr<CefURLRequest> request) override {
+        auto status = request->GetRequestStatus();
+        auto response = request->GetResponse();
+
+        bool success = false;
+        std::string resolved_url = original_url_;
+
+        if (status == UR_SUCCESS && response && response->GetStatus() == 200) {
+            // Check if we got valid JSON with an "Id" field
+            if (response_body_.find("\"Id\"") != std::string::npos) {
+                success = true;
+                // Use the final URL after redirects
+                resolved_url = response->GetURL().ToString();
+                // Strip /System/Info/Public to get base URL
+                size_t pos = resolved_url.find("/System/Info/Public");
+                if (pos != std::string::npos) {
+                    resolved_url = resolved_url.substr(0, pos);
+                }
+            }
+        }
+
+        std::cerr << "[Connectivity] Request complete: " << (success ? "success" : "failed")
+                  << " url=" << resolved_url << std::endl;
+
+        // Send result back to renderer
+        CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("serverConnectivityResult");
+        msg->GetArgumentList()->SetString(0, original_url_);
+        msg->GetArgumentList()->SetBool(1, success);
+        msg->GetArgumentList()->SetString(2, resolved_url);
+        browser_->GetMainFrame()->SendProcessMessage(PID_RENDERER, msg);
+    }
+
+    void OnUploadProgress(CefRefPtr<CefURLRequest> request, int64_t current, int64_t total) override {}
+    void OnDownloadProgress(CefRefPtr<CefURLRequest> request, int64_t current, int64_t total) override {}
+
+    void OnDownloadData(CefRefPtr<CefURLRequest> request, const void* data, size_t data_length) override {
+        response_body_.append(static_cast<const char*>(data), data_length);
+    }
+
+    bool GetAuthCredentials(bool isProxy, const CefString& host, int port,
+                           const CefString& realm, const CefString& scheme,
+                           CefRefPtr<CefAuthCallback> callback) override {
+        return false;
+    }
+
+private:
+    CefRefPtr<CefBrowser> browser_;
+    std::string original_url_;
+    std::string response_body_;
+
+    IMPLEMENT_REFCOUNTING(ConnectivityURLRequestClient);
+};
 
 #ifdef __APPLE__
 Client::Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg,
@@ -559,6 +619,31 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         std::cerr << "[Overlay IPC] Saving server URL: " << url << std::endl;
         Settings::instance().setServerUrl(url);
         Settings::instance().save();
+        return true;
+    }
+
+    if (name == "checkServerConnectivity") {
+        std::string url = args->GetString(0).ToString();
+        std::cerr << "[Overlay IPC] Checking connectivity: " << url << std::endl;
+
+        // Normalize URL
+        if (url.find("://") == std::string::npos) {
+            url = "http://" + url;
+        }
+        // Remove trailing slash
+        if (!url.empty() && url.back() == '/') {
+            url.pop_back();
+        }
+
+        std::string check_url = url + "/System/Info/Public";
+
+        CefRefPtr<CefRequest> request = CefRequest::Create();
+        request->SetURL(check_url);
+        request->SetMethod("GET");
+
+        CefRefPtr<ConnectivityURLRequestClient> client =
+            new ConnectivityURLRequestClient(browser, url);
+        CefURLRequest::Create(request, client, nullptr);
         return true;
     }
 

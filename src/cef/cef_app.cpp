@@ -98,6 +98,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     jmpNative->SetValue("saveServerUrl", CefV8Value::CreateFunction("saveServerUrl", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("setFullscreen", CefV8Value::CreateFunction("setFullscreen", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("loadServer", CefV8Value::CreateFunction("loadServer", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("checkServerConnectivity", CefV8Value::CreateFunction("checkServerConnectivity", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("notifyMetadata", CefV8Value::CreateFunction("notifyMetadata", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("notifyPosition", CefV8Value::CreateFunction("notifyPosition", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("notifySeek", CefV8Value::CreateFunction("notifySeek", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
@@ -129,6 +130,24 @@ bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<CefFrame> frame,
                                    CefProcessId source_process,
                                    CefRefPtr<CefProcessMessage> message) {
+    std::string name = message->GetName().ToString();
+
+    if (name == "serverConnectivityResult") {
+        CefRefPtr<CefListValue> args = message->GetArgumentList();
+        std::string url = args->GetString(0).ToString();
+        bool success = args->GetBool(1);
+        std::string resolved_url = args->GetString(2).ToString();
+
+        // Call the JS callback
+        std::string js = "if (window._onServerConnectivityResult) {"
+                        "  window._onServerConnectivityResult('" + url + "', " +
+                        (success ? "true" : "false") + ", '" + resolved_url + "');"
+                        "}";
+        frame->ExecuteJavaScript(js, frame->GetURL(), 0);
+        return true;
+    }
+
+    std::cerr << "[App IPC] Unhandled: " << name << std::endl;
     return false;
 }
 
@@ -331,6 +350,17 @@ bool NativeV8Handler::Execute(const CefString& name,
             std::string url = arguments[0]->GetStringValue().ToString();
             std::cerr << "[V8] loadServer: " << url << std::endl;
             CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("loadServer");
+            msg->GetArgumentList()->SetString(0, url);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "checkServerConnectivity") {
+        if (arguments.size() >= 1 && arguments[0]->IsString()) {
+            std::string url = arguments[0]->GetStringValue().ToString();
+            std::cerr << "[V8] checkServerConnectivity: " << url << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("checkServerConnectivity");
             msg->GetArgumentList()->SetString(0, url);
             browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
         }
