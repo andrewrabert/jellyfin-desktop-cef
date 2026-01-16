@@ -1,6 +1,6 @@
 # Jellyfin Desktop CEF
 
-Jellyfin client using CEF for web UI, mpv/libplacebo for video playback with HDR support.
+Experimental rewrite of [Jellyfin Desktop](https://github.com/jellyfin/jellyfin-desktop) built on [CEF](https://bitbucket.org/chromiumembedded/cef).
 
 ## Supported Platforms
 

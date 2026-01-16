@@ -191,7 +191,7 @@ add_custom_command(
 )
 add_custom_target(embedded_resources DEPENDS ${EMBEDDED_RESOURCES_HEADER})
 
-add_executable(jellyfin-desktop
+add_executable(jellyfin-desktop-cef
     src/main.cpp
     src/cef/cef_app.cpp
     src/cef/cef_client.cpp
@@ -204,9 +204,9 @@ add_executable(jellyfin-desktop
 )
 
 # Ensure JS shims are embedded before compiling cef_app.cpp
-add_dependencies(jellyfin-desktop embedded_js embedded_resources)
+add_dependencies(jellyfin-desktop-cef embedded_js embedded_resources)
 
-target_include_directories(jellyfin-desktop PRIVATE
+target_include_directories(jellyfin-desktop-cef PRIVATE
     ${CEF_INCLUDE_DIRS}
     ${MPV_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
@@ -215,7 +215,7 @@ target_include_directories(jellyfin-desktop PRIVATE
     ${CMAKE_BINARY_DIR}/generated
 )
 
-target_link_libraries(jellyfin-desktop PRIVATE
+target_link_libraries(jellyfin-desktop-cef PRIVATE
     ${CEF_LIBRARIES}
     SDL3::SDL3
     ${MPV_LIBRARIES}
@@ -236,7 +236,7 @@ endif()
 
 # Linux RPATH configuration for libcef.so loading
 if(UNIX AND NOT APPLE)
-    set_target_properties(jellyfin-desktop PROPERTIES
+    set_target_properties(jellyfin-desktop-cef PROPERTIES
         INSTALL_RPATH "$ORIGIN"
         BUILD_WITH_INSTALL_RPATH TRUE
     )
@@ -252,7 +252,7 @@ if(APPLE)
     set(OLD_INSTALL_NAME "@executable_path/../Frameworks/${CEF_FRAMEWORK_NAME}.framework/${CEF_FRAMEWORK_NAME}")
     set(NEW_INSTALL_NAME "@executable_path/Frameworks/${CEF_FRAMEWORK_NAME}.framework/${CEF_FRAMEWORK_NAME}")
 
-    add_custom_command(TARGET jellyfin-desktop POST_BUILD
+    add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
         # Copy framework
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/Frameworks"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -261,40 +261,40 @@ if(APPLE)
         # Fix framework's install_name
         COMMAND install_name_tool -id "${NEW_INSTALL_NAME}" "${CEF_FRAMEWORK_LIB}"
         # Fix executable's reference to framework
-        COMMAND install_name_tool -change "${OLD_INSTALL_NAME}" "${NEW_INSTALL_NAME}" "$<TARGET_FILE:jellyfin-desktop>"
+        COMMAND install_name_tool -change "${OLD_INSTALL_NAME}" "${NEW_INSTALL_NAME}" "$<TARGET_FILE:jellyfin-desktop-cef>"
         COMMENT "Copying CEF framework and fixing install_name paths"
     )
 else()
     # Linux: Separate Resources and Release directories
-    add_custom_command(TARGET jellyfin-desktop POST_BUILD
+    add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CEF_ROOT}/Resources"
-            "$<TARGET_FILE_DIR:jellyfin-desktop>"
+            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CEF_ROOT}/Release"
-            "$<TARGET_FILE_DIR:jellyfin-desktop>"
+            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>"
     )
 endif()
 
-add_dependencies(jellyfin-desktop mpv_build)
+add_dependencies(jellyfin-desktop-cef mpv_build)
 
 # Copy libmpv to build directory and fix install_name
 if(APPLE)
-    add_custom_command(TARGET jellyfin-desktop POST_BUILD
+    add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
             "${MPV_BUILD_DIR}/libmpv.2.dylib"
-            "$<TARGET_FILE_DIR:jellyfin-desktop>/libmpv.2.dylib"
+            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>/libmpv.2.dylib"
         # Fix libmpv install_name to load from executable directory
         COMMAND install_name_tool -id "@executable_path/libmpv.2.dylib"
-            "$<TARGET_FILE_DIR:jellyfin-desktop>/libmpv.2.dylib"
+            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>/libmpv.2.dylib"
         # Fix executable to use local libmpv
         COMMAND install_name_tool -change "@rpath/libmpv.2.dylib"
-            "@executable_path/libmpv.2.dylib" "$<TARGET_FILE:jellyfin-desktop>"
+            "@executable_path/libmpv.2.dylib" "$<TARGET_FILE:jellyfin-desktop-cef>"
     )
 else()
-    add_custom_command(TARGET jellyfin-desktop POST_BUILD
+    add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
             "${MPV_BUILD_DIR}/libmpv.so.2"
-            "$<TARGET_FILE_DIR:jellyfin-desktop>/libmpv.so.2"
+            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>/libmpv.so.2"
     )
 endif()

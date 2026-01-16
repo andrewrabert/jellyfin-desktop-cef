@@ -3,13 +3,13 @@
 ## Quick Start
 
 ```sh
-git clone https://github.com/andrewrabert/jellyfin-desktop-sdl-cef
-cd jellyfin-desktop-sdl-cef
+git clone https://github.com/andrewrabert/jellyfin-desktop-cef
+cd jellyfin-desktop-cef
 git submodule update --init --recursive
 python3 dev/download_cef.py
 cmake -B build -G Ninja
 cmake --build build
-./build/jellyfin-desktop
+./build/jellyfin-desktop-cef
 ```
 
 ## Web Debugger

@@ -270,7 +270,7 @@ int main(int argc, char* argv[]) {
 
     // Use plain Wayland window - we create our own EGL context
     SDL_Window* window = SDL_CreateWindow(
-        "Jellyfin Desktop",
+        "Jellyfin Desktop CEF",
         width, height,
         SDL_WINDOW_RESIZABLE
     );
