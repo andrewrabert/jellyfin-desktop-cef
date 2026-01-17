@@ -365,6 +365,7 @@ int main(int argc, char* argv[]) {
     // Initialize mpv player (using subsurface's Vulkan context)
     MpvPlayerVk mpv;
     bool has_video = false;
+    bool video_needs_rerender = false;  // Force render after resize (for paused video)
     double current_playback_rate = 1.0;
     if (!mpv.init(nullptr, &subsurface)) {
         std::cerr << "MpvPlayerVk init failed" << std::endl;
@@ -723,12 +724,22 @@ int main(int argc, char* argv[]) {
     mpv.setFinishedCallback([&]() {
         std::cerr << "[MAIN] Track finished naturally (EOF), emitting finished signal" << std::endl;
         has_video = false;
+#ifndef __APPLE__
+        if (has_subsurface) {
+            subsurface.setVisible(false);
+        }
+#endif
         client->emitFinished();
         mediaSession.setPlaybackState(PlaybackState::Stopped);
     });
     mpv.setCanceledCallback([&]() {
         std::cerr << "[MAIN] Track canceled (user stop), emitting canceled signal" << std::endl;
         has_video = false;
+#ifndef __APPLE__
+        if (has_subsurface) {
+            subsurface.setVisible(false);
+        }
+#endif
         client->emitCanceled();
         mediaSession.setPlaybackState(PlaybackState::Stopped);
     });
@@ -908,6 +919,7 @@ int main(int argc, char* argv[]) {
                 if (has_subsurface) {
                     vkDeviceWaitIdle(subsurface.vkDevice());
                     subsurface.recreateSwapchain(current_width, current_height);
+                    video_needs_rerender = true;  // Force render even when paused
                 }
 #endif
 
@@ -995,6 +1007,11 @@ int main(int argc, char* argv[]) {
                     mpv.stop();
                     has_video = false;
                     video_ready = false;
+#ifndef __APPLE__
+                    if (has_subsurface) {
+                        subsurface.setVisible(false);
+                    }
+#endif
                     // mpv END_FILE event will trigger finished callback
                 } else if (cmd.cmd == "pause") {
                     mpv.pause();
@@ -1160,7 +1177,7 @@ int main(int argc, char* argv[]) {
             }
         }
 #else
-        if (has_video && has_subsurface && mpv.hasFrame()) {
+        if (has_subsurface && ((has_video && mpv.hasFrame()) || video_needs_rerender)) {
             VkImage sub_image;
             VkImageView sub_view;
             VkFormat sub_format;
@@ -1170,6 +1187,7 @@ int main(int argc, char* argv[]) {
                           sub_format);
                 subsurface.submitFrame();
                 video_ready = true;
+                video_needs_rerender = false;
             }
         }
 

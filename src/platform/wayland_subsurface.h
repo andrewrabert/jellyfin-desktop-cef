@@ -47,6 +47,7 @@ public:
 
     void commit();
     void setColorspace();
+    void setVisible(bool visible);
 
     // Wayland registry callbacks (public for C callback struct)
     static void registryGlobal(void* data, wl_registry* registry,
@@ -96,4 +97,5 @@ private:
     VkFence acquire_fence_ = VK_NULL_HANDLE;
     uint32_t current_image_idx_ = 0;
     bool frame_active_ = false;
+    bool visible_ = false;
 };
