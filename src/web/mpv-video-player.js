@@ -202,6 +202,10 @@
             this._core.stopTimeUpdateTimer();
             this.removeMediaDialog();
             this._core.disconnectSignals();
+            // Exit fullscreen when player is destroyed
+            if (window._isFullscreen) {
+                document.exitFullscreen().catch(() => {});
+            }
         }
 
         createMediaElement(options) {

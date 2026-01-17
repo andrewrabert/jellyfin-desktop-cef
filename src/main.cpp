@@ -1,7 +1,6 @@
 #include <SDL3/SDL.h>
 #include <iostream>
 #include <filesystem>
-#include <atomic>
 #include <vector>
 #include <cstring>
 #include <mutex>
@@ -557,8 +556,9 @@ int main(int argc, char* argv[]) {
         }
     ));
 
-    // Track browser fullscreen requests for SDL
-    std::atomic<int> pending_fullscreen{-1};  // -1=none, 0=exit, 1=enter
+    // Track who initiated fullscreen (only changes from NONE, returns to NONE on exit)
+    enum class FullscreenSource { NONE, WM, CEF };
+    FullscreenSource fullscreen_source = FullscreenSource::NONE;
 
     CefRefPtr<Client> client(new Client(width, height,
         [&](const void* buffer, int w, int h) {
@@ -606,7 +606,21 @@ int main(int argc, char* argv[]) {
         },
         [&](bool fullscreen) {
             // Web content requested fullscreen change via JS Fullscreen API
-            pending_fullscreen.store(fullscreen ? 1 : 0);
+            std::cerr << "[Fullscreen] CEF requests " << (fullscreen ? "enter" : "exit")
+                      << ", source=" << static_cast<int>(fullscreen_source) << std::endl;
+            if (fullscreen) {
+                if (fullscreen_source == FullscreenSource::NONE) {
+                    fullscreen_source = FullscreenSource::CEF;
+                }
+                SDL_SetWindowFullscreen(window, true);
+            } else {
+                // Only honor CEF exit if CEF initiated fullscreen
+                if (fullscreen_source == FullscreenSource::CEF) {
+                    SDL_SetWindowFullscreen(window, false);
+                    fullscreen_source = FullscreenSource::NONE;
+                }
+                // WM-initiated fullscreen: ignore CEF exit request
+            }
         }
     ));
 
@@ -885,11 +899,19 @@ int main(int argc, char* argv[]) {
                 window_activated = true;
 #endif
             } else if (event.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
-                // Sync browser fullscreen with window fullscreen so exitFullscreen() works
+                // WM initiated fullscreen - track source and sync browser state
+                std::cerr << "[Fullscreen] SDL enter, source=" << static_cast<int>(fullscreen_source) << std::endl;
+                if (fullscreen_source == FullscreenSource::NONE) {
+                    fullscreen_source = FullscreenSource::WM;
+                }
                 client->executeJS("document.documentElement.requestFullscreen().catch(()=>{});");
             } else if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
-                // Tell CEF to exit browser fullscreen - triggers fullscreenchange event
+                // WM exited fullscreen - always sync browser, only clear source if WM initiated
+                std::cerr << "[Fullscreen] SDL leave, source=" << static_cast<int>(fullscreen_source) << std::endl;
                 client->exitFullscreen();
+                if (fullscreen_source == FullscreenSource::WM) {
+                    fullscreen_source = FullscreenSource::NONE;
+                }
             } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
                 auto resize_start = std::chrono::steady_clock::now();
                 current_width = event.window.data1;
@@ -929,12 +951,6 @@ int main(int argc, char* argv[]) {
                           << "ms" << std::endl;
             }
             have_event = SDL_PollEvent(&event);
-        }
-
-        // Process pending fullscreen from web content
-        int fs_request = pending_fullscreen.exchange(-1);
-        if (fs_request >= 0) {
-            SDL_SetWindowFullscreen(window, fs_request == 1);
         }
 
 #ifdef __APPLE__
