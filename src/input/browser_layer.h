@@ -12,6 +12,7 @@ public:
 
     void setReceiver(InputReceiver* receiver) { receiver_ = receiver; }
     InputReceiver* receiver() const { return receiver_; }
+    void setWindowSize(int w, int h) { window_width_ = w; window_height_ = h; }
 
     bool handleInput(const SDL_Event& event) override {
         if (!receiver_) return false;
@@ -70,6 +71,20 @@ public:
                 return true;
             }
 
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_UP:
+            case SDL_EVENT_FINGER_MOTION: {
+                int type = (event.type == SDL_EVENT_FINGER_DOWN) ? 1 :
+                           (event.type == SDL_EVENT_FINGER_UP) ? 0 : 2;
+                // SDL coords are 0-1 normalized, convert to window pixels
+                float x = event.tfinger.x * window_width_;
+                float y = event.tfinger.y * window_height_;
+                int mods = getModifiers();
+                receiver_->sendTouch(static_cast<int>(event.tfinger.fingerID & 0xFFFF),
+                                     x, y, 0, 0, event.tfinger.pressure, type, mods);
+                return true;
+            }
+
             default:
                 return false;
         }
@@ -118,6 +133,8 @@ private:
     }
 
     InputReceiver* receiver_ = nullptr;
+    int window_width_ = 0;
+    int window_height_ = 0;
     int mouse_x_ = 0;
     int mouse_y_ = 0;
     Uint64 last_click_time_ = 0;

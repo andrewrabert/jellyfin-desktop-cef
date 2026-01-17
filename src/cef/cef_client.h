@@ -25,6 +25,8 @@ public:
     virtual void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) = 0;
     virtual void sendKeyEvent(int key, bool down, int modifiers) = 0;
     virtual void sendChar(int charCode, int modifiers) = 0;
+    virtual void sendTouch(int id, float x, float y, float radiusX, float radiusY,
+                           float pressure, int type, int modifiers) = 0;
 };
 
 // Message callback for player commands from renderer
@@ -127,6 +129,8 @@ public:
     void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) override;
     void sendKeyEvent(int key, bool down, int modifiers) override;
     void sendChar(int charCode, int modifiers) override;
+    void sendTouch(int id, float x, float y, float radiusX, float radiusY,
+                   float pressure, int type, int modifiers) override;
     void sendFocus(bool focused) override;
     void resize(int width, int height);
     void loadUrl(const std::string& url);
@@ -211,6 +215,8 @@ public:
     void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) override;
     void sendKeyEvent(int key, bool down, int modifiers) override;
     void sendChar(int charCode, int modifiers) override;
+    void sendTouch(int id, float x, float y, float radiusX, float radiusY,
+                   float pressure, int type, int modifiers) override;
 
 private:
     int width_;

@@ -649,6 +649,8 @@ int main(int argc, char* argv[]) {
     // Input routing stack
     BrowserLayer overlay_browser_layer(overlay_client.get());
     BrowserLayer main_browser_layer(client.get());
+    overlay_browser_layer.setWindowSize(width, height);
+    main_browser_layer.setWindowSize(width, height);
     MenuLayer menu_layer(&menu);
     InputStack input_stack;
     input_stack.push(&overlay_browser_layer);  // Start with overlay
@@ -821,7 +823,10 @@ int main(int argc, char* argv[]) {
                 event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
                 event.type == SDL_EVENT_MOUSE_WHEEL ||
                 event.type == SDL_EVENT_KEY_DOWN ||
-                event.type == SDL_EVENT_KEY_UP) {
+                event.type == SDL_EVENT_KEY_UP ||
+                event.type == SDL_EVENT_FINGER_DOWN ||
+                event.type == SDL_EVENT_FINGER_UP ||
+                event.type == SDL_EVENT_FINGER_MOTION) {
                 activity_this_frame = true;
             }
 
@@ -832,7 +837,10 @@ int main(int argc, char* argv[]) {
                 event.type == SDL_EVENT_MOUSE_WHEEL ||
                 event.type == SDL_EVENT_KEY_DOWN ||
                 event.type == SDL_EVENT_KEY_UP ||
-                event.type == SDL_EVENT_TEXT_INPUT) {
+                event.type == SDL_EVENT_TEXT_INPUT ||
+                event.type == SDL_EVENT_FINGER_DOWN ||
+                event.type == SDL_EVENT_FINGER_UP ||
+                event.type == SDL_EVENT_FINGER_MOTION) {
                 input_stack.route(event);
             }
 
@@ -865,6 +873,8 @@ int main(int argc, char* argv[]) {
                 auto resize_start = std::chrono::steady_clock::now();
                 current_width = event.window.data1;
                 current_height = event.window.data2;
+                overlay_browser_layer.setWindowSize(current_width, current_height);
+                main_browser_layer.setWindowSize(current_width, current_height);
 
 #ifdef __APPLE__
                 // Resize Metal compositor and video layer

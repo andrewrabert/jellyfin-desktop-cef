@@ -486,6 +486,23 @@ void Client::sendFocus(bool focused) {
     browser_->GetHost()->SetFocus(focused);
 }
 
+void Client::sendTouch(int id, float x, float y, float radiusX, float radiusY,
+                       float pressure, int type, int modifiers) {
+    if (!browser_) return;
+    CefTouchEvent event;
+    event.id = id;
+    event.x = x;
+    event.y = y;
+    event.radius_x = radiusX;
+    event.radius_y = radiusY;
+    event.rotation_angle = 0;
+    event.pressure = pressure;
+    event.type = static_cast<cef_touch_event_type_t>(type);
+    event.modifiers = modifiers;
+    event.pointer_type = CEF_POINTER_TYPE_TOUCH;
+    browser_->GetHost()->SendTouchEvent(event);
+}
+
 void Client::resize(int width, int height) {
     width_ = width;
     height_ = height;
@@ -764,4 +781,21 @@ void OverlayClient::sendChar(int charCode, int modifiers) {
     event.type = KEYEVENT_CHAR;
     event.modifiers = modifiers;
     browser_->GetHost()->SendKeyEvent(event);
+}
+
+void OverlayClient::sendTouch(int id, float x, float y, float radiusX, float radiusY,
+                              float pressure, int type, int modifiers) {
+    if (!browser_) return;
+    CefTouchEvent event;
+    event.id = id;
+    event.x = x;
+    event.y = y;
+    event.radius_x = radiusX;
+    event.radius_y = radiusY;
+    event.rotation_angle = 0;
+    event.pressure = pressure;
+    event.type = static_cast<cef_touch_event_type_t>(type);
+    event.modifiers = modifiers;
+    event.pointer_type = CEF_POINTER_TYPE_TOUCH;
+    browser_->GetHost()->SendTouchEvent(event);
 }
