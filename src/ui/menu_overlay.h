@@ -14,10 +14,16 @@ struct MenuItem {
 
 class MenuOverlay {
 public:
+    using StateCallback = std::function<void()>;
+
     MenuOverlay();
     ~MenuOverlay();
 
     bool init();
+
+    // Callbacks for open/close events
+    void setOnOpen(StateCallback cb) { on_open_ = std::move(cb); }
+    void setOnClose(StateCallback cb) { on_close_ = std::move(cb); }
 
     // Open menu with items at position
     void open(int x, int y, const std::vector<MenuItem>& items,
@@ -43,6 +49,8 @@ private:
     void render();
     int itemAtPoint(int x, int y) const;
 
+    StateCallback on_open_;
+    StateCallback on_close_;
     bool is_open_ = false;
     bool ignore_next_up_ = false;  // Ignore the button-up that opened the menu
     bool needs_redraw_ = false;    // Force compositor update after close

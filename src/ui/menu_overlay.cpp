@@ -60,12 +60,14 @@ void MenuOverlay::open(int x, int y, const std::vector<MenuItem>& items,
     hover_index_ = -1;
     is_open_ = true;
     ignore_next_up_ = true;  // Ignore the button-up from the right-click that opened us
+    if (on_open_) on_open_();
     render();
     std::cerr << "[MenuOverlay] rendered, tex=" << tex_width_ << "x" << tex_height_ << " pixels=" << pixels_.size() << std::endl;
 }
 
 void MenuOverlay::close() {
-    if (is_open_ && callback_) {
+    if (!is_open_) return;
+    if (callback_) {
         callback_->Cancel();
     }
     is_open_ = false;
@@ -73,6 +75,7 @@ void MenuOverlay::close() {
     callback_ = nullptr;
     items_.clear();
     pixels_.clear();
+    if (on_close_) on_close_();
 }
 
 void MenuOverlay::select(int index) {
@@ -84,6 +87,7 @@ void MenuOverlay::select(int index) {
         callback_ = nullptr;
         items_.clear();
         pixels_.clear();
+        if (on_close_) on_close_();
     }
 }
 

@@ -39,6 +39,11 @@ void activateMacWindow(SDL_Window* window);
 #include "player/mpv/mpv_player_vk.h"
 #include "cef/cef_app.h"
 #include "cef/cef_client.h"
+#include "input/input_layer.h"
+#include "input/browser_layer.h"
+#include "input/menu_layer.h"
+#include "input/mpv_layer.h"
+#include "input/window_state.h"
 #include "ui/menu_overlay.h"
 #include "settings.h"
 
@@ -641,13 +646,28 @@ int main(int argc, char* argv[]) {
         std::cerr << "[Main] Loading saved server: " << saved_url << std::endl;
         CefBrowserHost::CreateBrowser(window_info, client, saved_url, browser_settings, nullptr, nullptr);
     }
+    // Input routing stack
+    BrowserLayer overlay_browser_layer(overlay_client.get());
+    BrowserLayer main_browser_layer(client.get());
+    MenuLayer menu_layer(&menu);
+    InputStack input_stack;
+    input_stack.push(&overlay_browser_layer);  // Start with overlay
+
+    // Track which browser layer is active
+    BrowserLayer* active_browser = &overlay_browser_layer;
+
+    // Push/pop menu layer on open/close
+    menu.setOnOpen([&]() { input_stack.push(&menu_layer); });
+    menu.setOnClose([&]() { input_stack.remove(&menu_layer); });
+
+    // Window state notifications
+    WindowStateNotifier window_state;
+    window_state.add(active_browser);
+    MpvLayer mpv_layer(&mpv);
+    window_state.add(&mpv_layer);
+
     auto last_activity = Clock::now();
     float overlay_alpha = 1.0f;
-    int mouse_x = 0, mouse_y = 0;
-    Uint64 last_click_time = 0;
-    int last_click_x = 0, last_click_y = 0;
-    int last_click_button = 0;
-    int click_count = 0;
     bool focus_set = false;
     int current_width = width;
     int current_height = height;
@@ -764,13 +784,7 @@ int main(int argc, char* argv[]) {
         mpv.processEvents();
 
         if (!focus_set) {
-            if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                overlay_client->sendFocus(true);
-                client->sendFocus(false);
-            } else {
-                client->sendFocus(true);
-                overlay_client->sendFocus(false);
-            }
+            window_state.notifyFocusGained();
             focus_set = true;
         }
 
@@ -811,97 +825,42 @@ int main(int argc, char* argv[]) {
                 activity_this_frame = true;
             }
 
-            int mods = sdlModsToCef(SDL_GetModState());
-
-            // Route input to menu overlay if open
-            if (menu.isOpen()) {
-                if (event.type == SDL_EVENT_MOUSE_MOTION) {
-                    menu.handleMouseMove(static_cast<int>(event.motion.x), static_cast<int>(event.motion.y));
-                } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                    menu.handleMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y), true);
-                } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                    menu.handleMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y), false);
-                } else if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
-                    menu.close();
-                }
-                have_event = SDL_PollEvent(&event);
-                continue;
+            // Route input through layer stack
+            if (event.type == SDL_EVENT_MOUSE_MOTION ||
+                event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                event.type == SDL_EVENT_MOUSE_WHEEL ||
+                event.type == SDL_EVENT_KEY_DOWN ||
+                event.type == SDL_EVENT_KEY_UP ||
+                event.type == SDL_EVENT_TEXT_INPUT) {
+                input_stack.route(event);
             }
 
-            if (event.type == SDL_EVENT_MOUSE_MOTION) {
-                mouse_x = static_cast<int>(event.motion.x);
-                mouse_y = static_cast<int>(event.motion.y);
-                SDL_MouseButtonFlags buttons = SDL_GetMouseState(nullptr, nullptr);
-                if (buttons & SDL_BUTTON_LMASK) mods |= (1 << 5);
-                if (buttons & SDL_BUTTON_MMASK) mods |= (1 << 6);
-                if (buttons & SDL_BUTTON_RMASK) mods |= (1 << 7);
-                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                    overlay_client->sendMouseMove(mouse_x, mouse_y, mods);
-                } else {
-                    client->sendMouseMove(mouse_x, mouse_y, mods);
-                }
-            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                int x = static_cast<int>(event.button.x);
-                int y = static_cast<int>(event.button.y);
-                int btn = event.button.button;
-                Uint64 now_ticks = SDL_GetTicks();
-
-                int dx = x - last_click_x;
-                int dy = y - last_click_y;
-                bool same_spot = (dx * dx + dy * dy) <= (MULTI_CLICK_DISTANCE * MULTI_CLICK_DISTANCE);
-                bool same_button = (btn == last_click_button);
-                bool in_time = (now_ticks - last_click_time) <= MULTI_CLICK_TIME;
-
-                if (same_spot && same_button && in_time) {
-                    click_count = (click_count % 3) + 1;
-                } else {
-                    click_count = 1;
-                }
-
-                last_click_time = now_ticks;
-                last_click_x = x;
-                last_click_y = y;
-                last_click_button = btn;
-
-                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                    overlay_client->sendFocus(true);
-                    overlay_client->sendMouseClick(x, y, true, btn, click_count, mods);
-                } else {
-                    client->sendFocus(true);
-                    client->sendMouseClick(x, y, true, btn, click_count, mods);
-                }
-            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                    overlay_client->sendMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y),
-                                           false, event.button.button, click_count, mods);
-                } else {
-                    client->sendMouseClick(static_cast<int>(event.button.x), static_cast<int>(event.button.y),
-                                           false, event.button.button, click_count, mods);
-                }
-            } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                    overlay_client->sendMouseWheel(mouse_x, mouse_y, event.wheel.x, event.wheel.y, mods);
-                } else {
-                    client->sendMouseWheel(mouse_x, mouse_y, event.wheel.x, event.wheel.y, mods);
-                }
-            } else if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
-                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                    overlay_client->sendFocus(true);
-                } else {
-                    client->sendFocus(true);
-                }
+            // Window events handled separately
+            if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+                window_state.notifyFocusGained();
+                // Sync fullscreen state on focus gain (WM may have changed it)
+                bool isFs = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+                std::string fsJs = "if(window._nativeFullscreenChanged) window._nativeFullscreenChanged(" + std::string(isFs ? "true" : "false") + ");";
+                client->executeJS(fsJs);
             } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-                if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                    overlay_client->sendFocus(false);
-                } else {
-                    client->sendFocus(false);
-                }
+                window_state.notifyFocusLost();
+            } else if (event.type == SDL_EVENT_WINDOW_MINIMIZED) {
+                window_state.notifyMinimized();
+            } else if (event.type == SDL_EVENT_WINDOW_RESTORED) {
+                window_state.notifyRestored();
 #ifdef __APPLE__
             } else if (event.type == SDL_EVENT_WINDOW_EXPOSED && !window_activated) {
                 // Activate window once it's actually visible on screen
                 activateMacWindow(window);
                 window_activated = true;
 #endif
+            } else if (event.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
+                std::string js = "if(window._nativeFullscreenChanged) window._nativeFullscreenChanged(true);";
+                client->executeJS(js);
+            } else if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
+                std::string js = "if(window._nativeFullscreenChanged) window._nativeFullscreenChanged(false);";
+                client->executeJS(js);
             } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
                 auto resize_start = std::chrono::steady_clock::now();
                 current_width = event.window.data1;
@@ -936,36 +895,6 @@ int main(int argc, char* argv[]) {
                 std::cerr << "[" << _ms() << "ms] resize: total="
                           << std::chrono::duration_cast<std::chrono::milliseconds>(resize_end-resize_start).count()
                           << "ms" << std::endl;
-            } else if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
-                bool down = (event.type == SDL_EVENT_KEY_DOWN);
-                SDL_Keycode key = event.key.key;
-                bool is_control_key = (key == SDLK_BACKSPACE || key == SDLK_DELETE ||
-                    key == SDLK_RETURN || key == SDLK_ESCAPE || key == SDLK_SPACE ||
-                    key == SDLK_TAB || key == SDLK_LEFT || key == SDLK_RIGHT ||
-                    key == SDLK_UP || key == SDLK_DOWN || key == SDLK_HOME ||
-                    key == SDLK_END || key == SDLK_PAGEUP || key == SDLK_PAGEDOWN ||
-                    key == SDLK_F5 || key == SDLK_F11);
-                bool has_ctrl = (mods & (1 << 2)) != 0;  // CTRL
-#ifdef __APPLE__
-                bool has_cmd = (mods & (1 << 7)) != 0;   // CMD (macOS)
-#else
-                bool has_cmd = false;
-#endif
-                if (is_control_key || has_ctrl || has_cmd) {
-                    if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                        overlay_client->sendKeyEvent(key, down, mods);
-                    } else {
-                        client->sendKeyEvent(key, down, mods);
-                    }
-                }
-            } else if (event.type == SDL_EVENT_TEXT_INPUT) {
-                for (const char* c = event.text.text; *c; ++c) {
-                    if (overlay_state == OverlayState::SHOWING || overlay_state == OverlayState::WAITING) {
-                        overlay_client->sendChar(static_cast<unsigned char>(*c), mods);
-                    } else {
-                        client->sendChar(static_cast<unsigned char>(*c), mods);
-                    }
-                }
             }
             have_event = SDL_PollEvent(&event);
         }
@@ -1142,6 +1071,14 @@ int main(int argc, char* argv[]) {
             auto elapsed = std::chrono::duration<float>(now - overlay_fade_start).count();
             if (elapsed >= OVERLAY_FADE_DELAY_SEC) {
                 overlay_state = OverlayState::FADING;
+                // Switch input from overlay to main browser
+                window_state.remove(active_browser);
+                active_browser->onFocusLost();
+                input_stack.remove(&overlay_browser_layer);
+                input_stack.push(&main_browser_layer);
+                active_browser = &main_browser_layer;
+                window_state.add(active_browser);
+                active_browser->onFocusGained();
                 overlay_fade_start = now;
                 std::cerr << "[Overlay] State: WAITING -> FADING" << std::endl;
             }
@@ -1153,9 +1090,6 @@ int main(int argc, char* argv[]) {
                 overlay_state = OverlayState::HIDDEN;
                 // Hide overlay view so old content doesn't show through
                 overlay_compositor.setVisible(false);
-                // Transfer focus from overlay to main browser
-                overlay_client->sendFocus(false);
-                client->sendFocus(true);
                 std::cerr << "[Overlay] State: FADING -> HIDDEN" << std::endl;
             } else {
                 overlay_browser_alpha = 1.0f - progress;

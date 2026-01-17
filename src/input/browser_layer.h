@@ -1,0 +1,128 @@
+#pragma once
+
+#include "input_layer.h"
+#include "window_state.h"
+#include "../cef/cef_client.h"
+#include <SDL3/SDL_timer.h>
+
+// Input layer that forwards events to a CEF browser client
+class BrowserLayer : public InputLayer, public WindowStateListener {
+public:
+    explicit BrowserLayer(InputReceiver* receiver) : receiver_(receiver) {}
+
+    void setReceiver(InputReceiver* receiver) { receiver_ = receiver; }
+    InputReceiver* receiver() const { return receiver_; }
+
+    bool handleInput(const SDL_Event& event) override {
+        if (!receiver_) return false;
+
+        switch (event.type) {
+            case SDL_EVENT_MOUSE_MOTION: {
+                mouse_x_ = static_cast<int>(event.motion.x);
+                mouse_y_ = static_cast<int>(event.motion.y);
+                int mods = getModifiers();
+                SDL_MouseButtonFlags buttons = SDL_GetMouseState(nullptr, nullptr);
+                if (buttons & SDL_BUTTON_LMASK) mods |= (1 << 5);
+                if (buttons & SDL_BUTTON_MMASK) mods |= (1 << 6);
+                if (buttons & SDL_BUTTON_RMASK) mods |= (1 << 7);
+                receiver_->sendMouseMove(mouse_x_, mouse_y_, mods);
+                return true;
+            }
+
+            case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+                int x = static_cast<int>(event.button.x);
+                int y = static_cast<int>(event.button.y);
+                int btn = event.button.button;
+                int mods = getModifiers();
+                updateClickCount(x, y, btn);
+                receiver_->sendFocus(true);
+                receiver_->sendMouseClick(x, y, true, btn, click_count_, mods);
+                return true;
+            }
+
+            case SDL_EVENT_MOUSE_BUTTON_UP: {
+                int x = static_cast<int>(event.button.x);
+                int y = static_cast<int>(event.button.y);
+                int mods = getModifiers();
+                receiver_->sendMouseClick(x, y, false, event.button.button, click_count_, mods);
+                return true;
+            }
+
+            case SDL_EVENT_MOUSE_WHEEL: {
+                int mods = getModifiers();
+                receiver_->sendMouseWheel(mouse_x_, mouse_y_, event.wheel.x, event.wheel.y, mods);
+                return true;
+            }
+
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP: {
+                bool down = (event.type == SDL_EVENT_KEY_DOWN);
+                int mods = getModifiers();
+                receiver_->sendKeyEvent(event.key.key, down, mods);
+                return true;
+            }
+
+            case SDL_EVENT_TEXT_INPUT: {
+                int mods = getModifiers();
+                for (const char* c = event.text.text; *c; ++c) {
+                    receiver_->sendChar(static_cast<unsigned char>(*c), mods);
+                }
+                return true;
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    // WindowStateListener
+    void onFocusGained() override {
+        if (receiver_) receiver_->sendFocus(true);
+    }
+
+    void onFocusLost() override {
+        if (receiver_) receiver_->sendFocus(false);
+    }
+
+private:
+    static constexpr int MULTI_CLICK_TIME = 500;
+    static constexpr int MULTI_CLICK_DISTANCE = 5;
+
+    int getModifiers() {
+        SDL_Keymod mod = SDL_GetModState();
+        int mods = 0;
+        if (mod & SDL_KMOD_SHIFT) mods |= (1 << 0);
+        if (mod & SDL_KMOD_CTRL) mods |= (1 << 2);
+        if (mod & SDL_KMOD_ALT) mods |= (1 << 3);
+        return mods;
+    }
+
+    void updateClickCount(int x, int y, int btn) {
+        Uint64 now = SDL_GetTicks();
+        int dx = x - last_click_x_;
+        int dy = y - last_click_y_;
+        bool same_spot = (dx * dx + dy * dy) <= (MULTI_CLICK_DISTANCE * MULTI_CLICK_DISTANCE);
+        bool same_button = (btn == last_click_button_);
+        bool in_time = (now - last_click_time_) <= MULTI_CLICK_TIME;
+
+        if (same_spot && same_button && in_time) {
+            click_count_ = (click_count_ % 3) + 1;
+        } else {
+            click_count_ = 1;
+        }
+
+        last_click_time_ = now;
+        last_click_x_ = x;
+        last_click_y_ = y;
+        last_click_button_ = btn;
+    }
+
+    InputReceiver* receiver_ = nullptr;
+    int mouse_x_ = 0;
+    int mouse_y_ = 0;
+    Uint64 last_click_time_ = 0;
+    int last_click_x_ = 0;
+    int last_click_y_ = 0;
+    int last_click_button_ = 0;
+    int click_count_ = 1;
+};

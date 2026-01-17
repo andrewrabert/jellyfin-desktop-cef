@@ -15,6 +15,18 @@
 
 class MenuOverlay;
 
+// Interface for input routing
+class InputReceiver {
+public:
+    virtual ~InputReceiver() = default;
+    virtual void sendFocus(bool focused) = 0;
+    virtual void sendMouseMove(int x, int y, int modifiers) = 0;
+    virtual void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) = 0;
+    virtual void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) = 0;
+    virtual void sendKeyEvent(int key, bool down, int modifiers) = 0;
+    virtual void sendChar(int charCode, int modifiers) = 0;
+};
+
 // Message callback for player commands from renderer
 // metadata is JSON string for "load" command, empty otherwise
 using PlayerMessageCallback = std::function<void(const std::string& cmd, const std::string& arg, int intArg, const std::string& metadata)>;
@@ -45,7 +57,7 @@ struct AcceleratedPaintInfo {
 using AcceleratedPaintCallback = std::function<void(const AcceleratedPaintInfo& info)>;
 #endif
 
-class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler, public CefContextMenuHandler {
+class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler, public CefContextMenuHandler, public InputReceiver {
 public:
     using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
 
@@ -109,13 +121,13 @@ public:
 
     bool isClosed() const { return is_closed_; }
 
-    // Input forwarding
-    void sendMouseMove(int x, int y, int modifiers);
-    void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers);
-    void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers);
-    void sendKeyEvent(int key, bool down, int modifiers);
-    void sendChar(int charCode, int modifiers);
-    void sendFocus(bool focused);
+    // Input forwarding (InputReceiver)
+    void sendMouseMove(int x, int y, int modifiers) override;
+    void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) override;
+    void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) override;
+    void sendKeyEvent(int key, bool down, int modifiers) override;
+    void sendChar(int charCode, int modifiers) override;
+    void sendFocus(bool focused) override;
     void resize(int width, int height);
     void loadUrl(const std::string& url);
 
@@ -158,7 +170,7 @@ private:
 };
 
 // Simplified client for overlay browser (no player, no menu)
-class OverlayClient : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler {
+class OverlayClient : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public InputReceiver {
 public:
     using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
     using LoadServerCallback = std::function<void(const std::string& url)>;
@@ -193,12 +205,12 @@ public:
 
     bool isClosed() const { return is_closed_; }
     void resize(int width, int height);
-    void sendFocus(bool focused);
-    void sendMouseMove(int x, int y, int modifiers);
-    void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers);
-    void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers);
-    void sendKeyEvent(int key, bool down, int modifiers);
-    void sendChar(int charCode, int modifiers);
+    void sendFocus(bool focused) override;
+    void sendMouseMove(int x, int y, int modifiers) override;
+    void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) override;
+    void sendMouseWheel(int x, int y, float deltaX, float deltaY, int modifiers) override;
+    void sendKeyEvent(int key, bool down, int modifiers) override;
+    void sendChar(int charCode, int modifiers) override;
 
 private:
     int width_;
