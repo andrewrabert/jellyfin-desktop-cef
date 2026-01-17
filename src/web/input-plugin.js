@@ -280,7 +280,11 @@
             });
 
             window.Events.on(pm, 'playbackstop', (e, stopInfo) => {
-                console.log('[Media] playbackstop event, stopInfo:', JSON.stringify(stopInfo));
+                try {
+                    console.log('[Media] playbackstop event, stopInfo:', JSON.stringify(stopInfo));
+                } catch (err) {
+                    console.log('[Media] playbackstop event, stopInfo: [unserializable]');
+                }
                 self.stopPositionUpdates();
 
                 const isNavigating = !!(stopInfo && stopInfo.nextMediaType);

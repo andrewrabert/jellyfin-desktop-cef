@@ -76,6 +76,13 @@ void MpvPlayerVk::handleMpvEvent(mpv_event* event) {
             } else if (strcmp(prop->name, "core-idle") == 0 && prop->format == MPV_FORMAT_FLAG) {
                 bool idle = *static_cast<int*>(prop->data) != 0;
                 if (on_core_idle_) on_core_idle_(idle, last_position_ * 1000.0);
+            } else if (strcmp(prop->name, "eof-reached") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool eof = *static_cast<int*>(prop->data) != 0;
+                if (eof && playing_) {
+                    std::cerr << "[MPV] eof-reached=true, track ended naturally" << std::endl;
+                    playing_ = false;
+                    if (on_finished_) on_finished_();
+                }
             } else if (strcmp(prop->name, "demuxer-cache-state") == 0 && prop->format == MPV_FORMAT_NODE) {
                 if (on_buffered_ranges_) {
                     std::vector<BufferedRange> ranges;
@@ -120,13 +127,14 @@ void MpvPlayerVk::handleMpvEvent(mpv_event* event) {
             break;
         case MPV_EVENT_END_FILE: {
             mpv_event_end_file* ef = static_cast<mpv_event_end_file*>(event->data);
-            playing_ = false;
-            // Distinguish user stop from natural end (like jellyfin-desktop)
+            std::cerr << "[MPV] END_FILE reason=" << ef->reason << " (0=EOF, 2=STOP)" << std::endl;
+            // With keep-open=yes, EOF reason won't fire (handled by eof-reached property)
+            // STOP reason fires on explicit stop command
             if (ef->reason == MPV_END_FILE_REASON_STOP) {
+                playing_ = false;
                 if (on_canceled_) on_canceled_();
-            } else {
-                if (on_finished_) on_finished_();
             }
+            // Note: EOF/QUIT/REDIRECT reasons are handled by eof-reached property observation
             break;
         }
         default:
@@ -148,7 +156,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, VideoSurface* subsurface) {
 
     mpv_set_option_string(mpv_, "vo", "libmpv");
     mpv_set_option_string(mpv_, "hwdec", "no");  // Force software decode for yuv420p10
-    mpv_set_option_string(mpv_, "keep-open", "yes");
+    mpv_set_option_string(mpv_, "keep-open", "yes");  // Keep video layer alive, detect EOF via eof-reached property
     mpv_set_option_string(mpv_, "terminal", "no");
     mpv_set_option_string(mpv_, "video-sync", "audio");  // Simple audio sync, no frame interpolation
     mpv_set_option_string(mpv_, "interpolation", "no");  // Disable motion interpolation
@@ -188,6 +196,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, VideoSurface* subsurface) {
     mpv_observe_property(mpv_, 0, "seeking", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv_, 0, "paused-for-cache", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv_, 0, "core-idle", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv_, 0, "eof-reached", MPV_FORMAT_FLAG);  // Detect natural track end with keep-open=yes
     mpv_observe_property(mpv_, 0, "demuxer-cache-state", MPV_FORMAT_NODE);
 
     // Wakeup callback for event-driven processing

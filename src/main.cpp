@@ -539,7 +539,7 @@ int main(int argc, char* argv[]) {
                 static bool warned = false;
                 if (!warned) {
                     std::cerr << "[CEF Overlay] getStagingBuffer returned null for " << w << "x" << h << std::endl;
-                    warned = false;
+                    warned = true;
                 }
             }
         },
@@ -568,7 +568,7 @@ int main(int argc, char* argv[]) {
                 static bool warned = false;
                 if (!warned) {
                     std::cerr << "[CEF] getStagingBuffer returned null for " << w << "x" << h << std::endl;
-                    warned = false;  // Warn every time for debugging
+                    warned = true;
                 }
             }
             paint_width = w;
@@ -692,11 +692,13 @@ int main(int argc, char* argv[]) {
         }
     });
     mpv.setFinishedCallback([&]() {
+        std::cerr << "[MAIN] Track finished naturally (EOF), emitting finished signal" << std::endl;
         has_video = false;
         client->emitFinished();
         mediaSession.setPlaybackState(PlaybackState::Stopped);
     });
     mpv.setCanceledCallback([&]() {
+        std::cerr << "[MAIN] Track canceled (user stop), emitting canceled signal" << std::endl;
         has_video = false;
         client->emitCanceled();
         mediaSession.setPlaybackState(PlaybackState::Stopped);
@@ -822,6 +824,7 @@ int main(int argc, char* argv[]) {
                 } else if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE) {
                     menu.close();
                 }
+                have_event = SDL_PollEvent(&event);
                 continue;
             }
 

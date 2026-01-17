@@ -26,7 +26,12 @@
             this.isLocalPlayer = true;
             this.isFetching = false;
 
-            this._core = new window.MpvPlayerCore(events);
+            // Use defineProperty to avoid circular reference in JSON.stringify
+            Object.defineProperty(this, '_core', {
+                value: new window.MpvPlayerCore(events),
+                writable: true,
+                enumerable: false
+            });
             this._core.player = this;
 
             this._videoDialog = undefined;
