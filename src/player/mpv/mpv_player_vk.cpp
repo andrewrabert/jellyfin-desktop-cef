@@ -160,6 +160,7 @@ bool MpvPlayerVk::init(VulkanContext* vk, VideoSurface* subsurface) {
     mpv_set_option_string(mpv_, "terminal", "no");
     mpv_set_option_string(mpv_, "video-sync", "audio");  // Simple audio sync, no frame interpolation
     mpv_set_option_string(mpv_, "interpolation", "no");  // Disable motion interpolation
+    mpv_set_option_string(mpv_, "ytdl", "no");  // Disable youtube-dl
 
     // HDR output configuration
     bool use_hdr = subsurface_ && subsurface_->isHdr();
