@@ -8,6 +8,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <array>
+#include <atomic>
 
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
@@ -477,7 +479,16 @@ int main(int argc, char* argv[]) {
     }
 
     // Create browser
-    std::mutex buffer_mutex;
+    // Double-buffer for paint callbacks - reduces lock contention
+    struct PaintBuffer {
+        std::vector<uint8_t> data;
+        int width = 0;
+        int height = 0;
+        bool dirty = false;
+    };
+    std::array<PaintBuffer, 2> paint_buffers;
+    std::atomic<int> paint_write_idx{0};  // CEF writes here
+    std::mutex paint_swap_mutex;  // Only held during buffer swap
     int paint_width = 0, paint_height = 0;
 
     // Player command queue
@@ -553,7 +564,6 @@ int main(int argc, char* argv[]) {
     // Overlay browser client (for loading UI)
     CefRefPtr<OverlayClient> overlay_client(new OverlayClient(width, height,
         [&](const void* buffer, int w, int h) {
-            std::lock_guard<std::mutex> lock(buffer_mutex);
             static bool first_overlay_paint = true;
             if (first_overlay_paint) {
                 std::cerr << "[CEF Overlay] first paint callback: " << w << "x" << h << std::endl;
@@ -585,24 +595,29 @@ int main(int argc, char* argv[]) {
 
     CefRefPtr<Client> client(new Client(width, height,
         [&](const void* buffer, int w, int h) {
-            // Copy directly to compositor staging buffer (single memcpy)
-            std::lock_guard<std::mutex> lock(buffer_mutex);
             static bool first_paint = true;
             if (first_paint) {
                 std::cerr << "[CEF] first paint callback: " << w << "x" << h << std::endl;
                 first_paint = false;
             }
-            void* staging = compositor.getStagingBuffer(w, h);
-            if (staging) {
-                memcpy(staging, buffer, w * h * 4);
-                compositor.markStagingDirty();
-            } else {
-                static bool warned = false;
-                if (!warned) {
-                    std::cerr << "[CEF] getStagingBuffer returned null for " << w << "x" << h << std::endl;
-                    warned = true;
-                }
+            // Write to back buffer without blocking
+            int write_idx = paint_write_idx.load(std::memory_order_relaxed);
+            auto& buf = paint_buffers[write_idx];
+            size_t size = w * h * 4;
+            if (buf.data.size() < size) {
+                buf.data.resize(size);
             }
+            memcpy(buf.data.data(), buffer, size);
+            buf.width = w;
+            buf.height = h;
+
+            // Swap buffers (brief lock)
+            {
+                std::lock_guard<std::mutex> lock(paint_swap_mutex);
+                buf.dirty = true;
+                paint_write_idx.store(1 - write_idx, std::memory_order_release);
+            }
+
             paint_width = w;
             paint_height = h;
         },
@@ -1241,6 +1256,21 @@ int main(int argc, char* argv[]) {
 
         // Import queued DMA-BUF if any (GPU path)
         compositor.importQueuedDmaBuf();
+
+        // Flush paint buffer to compositor
+        {
+            std::lock_guard<std::mutex> lock(paint_swap_mutex);
+            int read_idx = 1 - paint_write_idx.load(std::memory_order_acquire);
+            auto& buf = paint_buffers[read_idx];
+            if (buf.dirty && !buf.data.empty()) {
+                void* staging = compositor.getStagingBuffer(buf.width, buf.height);
+                if (staging) {
+                    memcpy(staging, buf.data.data(), buf.width * buf.height * 4);
+                    compositor.markStagingDirty();
+                }
+                buf.dirty = false;
+            }
+        }
 
         // Flush pending overlay data to GPU texture (software path)
         compositor.flushOverlay();
