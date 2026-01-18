@@ -119,39 +119,56 @@ else()
     )
 endif()
 
-# Build mpv from submodule using meson
-set(MPV_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/mpv")
-set(MPV_BUILD_DIR "${MPV_SOURCE_DIR}/build")
+# mpv configuration
+set(EXTERNAL_MPV_DIR "" CACHE PATH "Path to external mpv installation (must contain include/ and lib/)")
 
-if(APPLE)
-    set(MPV_LIBRARY "${MPV_BUILD_DIR}/libmpv.dylib")
-else()
-    set(MPV_LIBRARY "${MPV_BUILD_DIR}/libmpv.so")
-endif()
-
-# Configure meson if not yet configured
-if(NOT EXISTS "${MPV_BUILD_DIR}/build.ninja")
-    message(STATUS "Configuring mpv with meson...")
-    execute_process(
-        COMMAND meson setup build --default-library=shared -Dlibmpv=true
-        WORKING_DIRECTORY ${MPV_SOURCE_DIR}
-        RESULT_VARIABLE MPV_SETUP_RESULT
-    )
-    if(NOT MPV_SETUP_RESULT EQUAL 0)
-        message(FATAL_ERROR "Failed to configure mpv with meson")
+if(EXTERNAL_MPV_DIR)
+    message(STATUS "Using external mpv from: ${EXTERNAL_MPV_DIR}")
+    set(MPV_INCLUDE_DIRS "${EXTERNAL_MPV_DIR}/include")
+    if(APPLE)
+        set(MPV_LIBRARY "${EXTERNAL_MPV_DIR}/lib/libmpv.dylib")
+    else()
+        set(MPV_LIBRARY "${EXTERNAL_MPV_DIR}/lib/libmpv.so")
     endif()
+    if(NOT EXISTS "${MPV_LIBRARY}")
+        message(FATAL_ERROR "mpv library not found at ${MPV_LIBRARY}")
+    endif()
+    set(MPV_LIBRARIES "${MPV_LIBRARY}")
+else()
+    # Build mpv from submodule using meson
+    set(MPV_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/mpv")
+    set(MPV_BUILD_DIR "${MPV_SOURCE_DIR}/build")
+
+    if(APPLE)
+        set(MPV_LIBRARY "${MPV_BUILD_DIR}/libmpv.dylib")
+    else()
+        set(MPV_LIBRARY "${MPV_BUILD_DIR}/libmpv.so")
+    endif()
+
+    # Configure meson if not yet configured
+    if(NOT EXISTS "${MPV_BUILD_DIR}/build.ninja")
+        message(STATUS "Configuring mpv with meson...")
+        execute_process(
+            COMMAND meson setup build --default-library=shared -Dlibmpv=true
+            WORKING_DIRECTORY ${MPV_SOURCE_DIR}
+            RESULT_VARIABLE MPV_SETUP_RESULT
+        )
+        if(NOT MPV_SETUP_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to configure mpv with meson")
+        endif()
+    endif()
+
+    # Custom target that always invokes meson compile (meson handles incremental builds)
+    add_custom_target(mpv_build
+        COMMAND meson compile -C build
+        WORKING_DIRECTORY ${MPV_SOURCE_DIR}
+        COMMENT "Building mpv (meson handles incremental builds)"
+        BYPRODUCTS ${MPV_LIBRARY}
+    )
+
+    set(MPV_INCLUDE_DIRS "${MPV_SOURCE_DIR}/include")
+    set(MPV_LIBRARIES "${MPV_LIBRARY}")
 endif()
-
-# Custom target that always invokes meson compile (meson handles incremental builds)
-add_custom_target(mpv_build
-    COMMAND meson compile -C build
-    WORKING_DIRECTORY ${MPV_SOURCE_DIR}
-    COMMENT "Building mpv (meson handles incremental builds)"
-    BYPRODUCTS ${MPV_LIBRARY}
-)
-
-set(MPV_INCLUDE_DIRS "${MPV_SOURCE_DIR}/include")
-set(MPV_LIBRARIES "${MPV_LIBRARY}")
 
 # Embed JS shims into generated header
 set(JS_SHIMS
@@ -276,13 +293,29 @@ else()
     )
 endif()
 
-add_dependencies(jellyfin-desktop-cef mpv_build)
+if(NOT EXTERNAL_MPV_DIR)
+    add_dependencies(jellyfin-desktop-cef mpv_build)
+endif()
 
 # Copy libmpv to build directory and fix install_name
+if(EXTERNAL_MPV_DIR)
+    if(APPLE)
+        set(MPV_VERSIONED_LIB "${EXTERNAL_MPV_DIR}/lib/libmpv.2.dylib")
+    else()
+        set(MPV_VERSIONED_LIB "${EXTERNAL_MPV_DIR}/lib/libmpv.so.2")
+    endif()
+else()
+    if(APPLE)
+        set(MPV_VERSIONED_LIB "${MPV_BUILD_DIR}/libmpv.2.dylib")
+    else()
+        set(MPV_VERSIONED_LIB "${MPV_BUILD_DIR}/libmpv.so.2")
+    endif()
+endif()
+
 if(APPLE)
     add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
-            "${MPV_BUILD_DIR}/libmpv.2.dylib"
+            "${MPV_VERSIONED_LIB}"
             "$<TARGET_FILE_DIR:jellyfin-desktop-cef>/libmpv.2.dylib"
         # Fix libmpv install_name to load from executable directory
         COMMAND install_name_tool -id "@executable_path/libmpv.2.dylib"
@@ -294,7 +327,7 @@ if(APPLE)
 else()
     add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
-            "${MPV_BUILD_DIR}/libmpv.so.2"
+            "${MPV_VERSIONED_LIB}"
             "$<TARGET_FILE_DIR:jellyfin-desktop-cef>/libmpv.so.2"
     )
 endif()
