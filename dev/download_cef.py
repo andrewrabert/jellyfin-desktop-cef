@@ -55,11 +55,18 @@ def fetch_index():
 
 def find_latest_stable(index, platform_id):
     """Find the latest stable CEF version for the given platform."""
-    for platform_data in index.get(platform_id, {}).get("versions", []):
-        channel = platform_data.get("channel", "")
-        if channel == "stable":
-            return platform_data
-    raise RuntimeError(f"No stable version found for platform: {platform_id}")
+    stable_versions = [
+        v for v in index.get(platform_id, {}).get("versions", [])
+        if v.get("channel") == "stable"
+    ]
+    if not stable_versions:
+        raise RuntimeError(f"No stable version found for platform: {platform_id}")
+    # Sort by chromium major version descending
+    stable_versions.sort(
+        key=lambda v: int(v.get("chromium_version", "0").split(".")[0]),
+        reverse=True,
+    )
+    return stable_versions[0]
 
 
 def get_minimal_distribution(version_data):
