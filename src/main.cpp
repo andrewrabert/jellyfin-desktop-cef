@@ -415,8 +415,13 @@ int main(int argc, char* argv[]) {
     CefString(&settings.browser_subprocess_path).FromString((exe_path / "jellyfin-desktop").string());
 #else
     std::filesystem::path exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
+#ifdef CEF_RESOURCES_DIR
+    CefString(&settings.resources_dir_path).FromString(CEF_RESOURCES_DIR);
+    CefString(&settings.locales_dir_path).FromString(CEF_RESOURCES_DIR "/locales");
+#else
     CefString(&settings.resources_dir_path).FromString(exe_path.string());
     CefString(&settings.locales_dir_path).FromString((exe_path / "locales").string());
+#endif
 #endif
 
     // Cache path

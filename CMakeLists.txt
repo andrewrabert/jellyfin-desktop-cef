@@ -240,6 +240,13 @@ target_link_libraries(jellyfin-desktop-cef PRIVATE
     ${PLATFORM_LIBRARIES}
 )
 
+# When using external CEF, tell the app where to find resources
+if(EXTERNAL_CEF_DIR)
+    target_compile_definitions(jellyfin-desktop-cef PRIVATE
+        CEF_RESOURCES_DIR="${CEF_RESOURCE_DIR}"
+    )
+endif()
+
 # Enable ARC for Objective-C++ files on macOS
 if(APPLE)
     set_source_files_properties(
@@ -253,51 +260,54 @@ endif()
 
 # Linux RPATH configuration
 if(UNIX AND NOT APPLE)
+    set(RPATH_DIRS "$ORIGIN")
     if(EXTERNAL_MPV_DIR)
-        set_target_properties(jellyfin-desktop-cef PROPERTIES
-            INSTALL_RPATH "$ORIGIN;${EXTERNAL_MPV_DIR}/lib"
-            BUILD_WITH_INSTALL_RPATH TRUE
-        )
-    else()
-        set_target_properties(jellyfin-desktop-cef PROPERTIES
-            INSTALL_RPATH "$ORIGIN"
-            BUILD_WITH_INSTALL_RPATH TRUE
-        )
+        list(APPEND RPATH_DIRS "${EXTERNAL_MPV_DIR}/lib")
     endif()
+    if(EXTERNAL_CEF_DIR)
+        list(APPEND RPATH_DIRS "${EXTERNAL_CEF_DIR}/lib")
+    endif()
+    list(JOIN RPATH_DIRS ";" RPATH_STRING)
+    set_target_properties(jellyfin-desktop-cef PROPERTIES
+        INSTALL_RPATH "${RPATH_STRING}"
+        BUILD_WITH_INSTALL_RPATH TRUE
+    )
 endif()
 
-# Copy CEF resources to build directory
-if(APPLE)
-    # macOS: Copy framework to build/Frameworks/ and fix install_name paths
-    # CEF ships with @executable_path/../Frameworks/... but we want @executable_path/Frameworks/...
-    set(CEF_FRAMEWORK_NAME "Chromium Embedded Framework")
-    set(CEF_FRAMEWORK_DIR "${CMAKE_BINARY_DIR}/Frameworks/${CEF_FRAMEWORK_NAME}.framework")
-    set(CEF_FRAMEWORK_LIB "${CEF_FRAMEWORK_DIR}/${CEF_FRAMEWORK_NAME}")
-    set(OLD_INSTALL_NAME "@executable_path/../Frameworks/${CEF_FRAMEWORK_NAME}.framework/${CEF_FRAMEWORK_NAME}")
-    set(NEW_INSTALL_NAME "@executable_path/Frameworks/${CEF_FRAMEWORK_NAME}.framework/${CEF_FRAMEWORK_NAME}")
+# Copy CEF resources to build directory (only when not using external CEF)
+if(NOT EXTERNAL_CEF_DIR)
+    if(APPLE)
+        # macOS: Copy framework to build/Frameworks/ and fix install_name paths
+        # CEF ships with @executable_path/../Frameworks/... but we want @executable_path/Frameworks/...
+        set(CEF_FRAMEWORK_NAME "Chromium Embedded Framework")
+        set(CEF_FRAMEWORK_DIR "${CMAKE_BINARY_DIR}/Frameworks/${CEF_FRAMEWORK_NAME}.framework")
+        set(CEF_FRAMEWORK_LIB "${CEF_FRAMEWORK_DIR}/${CEF_FRAMEWORK_NAME}")
+        set(OLD_INSTALL_NAME "@executable_path/../Frameworks/${CEF_FRAMEWORK_NAME}.framework/${CEF_FRAMEWORK_NAME}")
+        set(NEW_INSTALL_NAME "@executable_path/Frameworks/${CEF_FRAMEWORK_NAME}.framework/${CEF_FRAMEWORK_NAME}")
 
-    add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
-        # Copy framework
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/Frameworks"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CEF_ROOT}/Release/${CEF_FRAMEWORK_NAME}.framework"
-            "${CEF_FRAMEWORK_DIR}"
-        # Fix framework's install_name
-        COMMAND install_name_tool -id "${NEW_INSTALL_NAME}" "${CEF_FRAMEWORK_LIB}"
-        # Fix executable's reference to framework
-        COMMAND install_name_tool -change "${OLD_INSTALL_NAME}" "${NEW_INSTALL_NAME}" "$<TARGET_FILE:jellyfin-desktop-cef>"
-        COMMENT "Copying CEF framework and fixing install_name paths"
-    )
-else()
-    # Linux: Separate Resources and Release directories
-    add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CEF_ROOT}/Resources"
-            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CEF_ROOT}/Release"
-            "$<TARGET_FILE_DIR:jellyfin-desktop-cef>"
-    )
+        add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
+            # Copy framework
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/Frameworks"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CEF_RELEASE_DIR}/${CEF_FRAMEWORK_NAME}.framework"
+                "${CEF_FRAMEWORK_DIR}"
+            # Fix framework's install_name
+            COMMAND install_name_tool -id "${NEW_INSTALL_NAME}" "${CEF_FRAMEWORK_LIB}"
+            # Fix executable's reference to framework
+            COMMAND install_name_tool -change "${OLD_INSTALL_NAME}" "${NEW_INSTALL_NAME}" "$<TARGET_FILE:jellyfin-desktop-cef>"
+            COMMENT "Copying CEF framework and fixing install_name paths"
+        )
+    else()
+        # Linux: Separate Resources and Release directories
+        add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CEF_RESOURCE_DIR}"
+                "$<TARGET_FILE_DIR:jellyfin-desktop-cef>"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CEF_RELEASE_DIR}"
+                "$<TARGET_FILE_DIR:jellyfin-desktop-cef>"
+        )
+    endif()
 endif()
 
 if(NOT EXTERNAL_MPV_DIR)
