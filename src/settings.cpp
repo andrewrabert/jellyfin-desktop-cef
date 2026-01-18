@@ -3,6 +3,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <sys/stat.h>
+#include <thread>
 
 Settings& Settings::instance() {
     static Settings instance;
@@ -69,4 +70,20 @@ bool Settings::save() {
     file << "}\n";
 
     return true;
+}
+
+void Settings::saveAsync() {
+    // Capture current state and save in background
+    std::string url = server_url_;
+    std::string path = getConfigPath();
+
+    std::thread([this, url, path]() {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        std::ofstream file(path);
+        if (file.is_open()) {
+            file << "{\n";
+            file << "  \"serverUrl\": \"" << url << "\"\n";
+            file << "}\n";
+        }
+    }).detach();
 }

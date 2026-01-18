@@ -309,7 +309,7 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         std::string url = args->GetString(0).ToString();
         std::cerr << "[IPC] Saving server URL: " << url << std::endl;
         Settings::instance().setServerUrl(url);
-        Settings::instance().save();
+        Settings::instance().saveAsync();
         return true;
     } else if (name == "notifyMetadata") {
         std::string metadata = args->GetString(0).ToString();
@@ -758,7 +758,7 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         std::string url = args->GetString(0).ToString();
         std::cerr << "[Overlay IPC] Saving server URL: " << url << std::endl;
         Settings::instance().setServerUrl(url);
-        Settings::instance().save();
+        Settings::instance().saveAsync();
         return true;
     }
 
