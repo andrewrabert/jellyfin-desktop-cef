@@ -96,6 +96,8 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
     jmpNative->SetValue("playerSetMuted", CefV8Value::CreateFunction("playerSetMuted", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("playerSetSpeed", CefV8Value::CreateFunction("playerSetSpeed", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("playerSetSubtitle", CefV8Value::CreateFunction("playerSetSubtitle", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("playerSetAudio", CefV8Value::CreateFunction("playerSetAudio", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
+    jmpNative->SetValue("playerSetAudioDelay", CefV8Value::CreateFunction("playerSetAudioDelay", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("saveServerUrl", CefV8Value::CreateFunction("saveServerUrl", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("loadServer", CefV8Value::CreateFunction("loadServer", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
     jmpNative->SetValue("checkServerConnectivity", CefV8Value::CreateFunction("checkServerConnectivity", handler), V8_PROPERTY_ATTRIBUTE_READONLY);
@@ -268,6 +270,28 @@ bool NativeV8Handler::Execute(const CefString& name,
             std::cerr << "[V8] playerSetSubtitle: " << sid << std::endl;
             CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("playerSetSubtitle");
             msg->GetArgumentList()->SetInt(0, sid);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "playerSetAudio") {
+        if (arguments.size() >= 1 && arguments[0]->IsInt()) {
+            int aid = arguments[0]->GetIntValue();
+            std::cerr << "[V8] playerSetAudio: " << aid << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("playerSetAudio");
+            msg->GetArgumentList()->SetInt(0, aid);
+            browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
+        }
+        return true;
+    }
+
+    if (name == "playerSetAudioDelay") {
+        if (arguments.size() >= 1 && arguments[0]->IsDouble()) {
+            double delay = arguments[0]->GetDoubleValue();
+            std::cerr << "[V8] playerSetAudioDelay: " << delay << std::endl;
+            CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("playerSetAudioDelay");
+            msg->GetArgumentList()->SetDouble(0, delay);
             browser_->GetMainFrame()->SendProcessMessage(PID_BROWSER, msg);
         }
         return true;

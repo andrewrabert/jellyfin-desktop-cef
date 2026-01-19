@@ -380,6 +380,21 @@ void MpvPlayerVk::setSubtitleTrack(int sid) {
     }
 }
 
+void MpvPlayerVk::setAudioTrack(int aid) {
+    if (!mpv_) return;
+    if (aid < 0) {
+        mpv_set_property_string(mpv_, "aid", "no");
+    } else {
+        int64_t id = aid;
+        mpv_set_property_async(mpv_, 0, "aid", MPV_FORMAT_INT64, &id);
+    }
+}
+
+void MpvPlayerVk::setAudioDelay(double seconds) {
+    if (!mpv_) return;
+    mpv_set_property_async(mpv_, 0, "audio-delay", MPV_FORMAT_DOUBLE, &seconds);
+}
+
 double MpvPlayerVk::getPosition() const {
     if (!mpv_) return 0;
     double pos = 0;

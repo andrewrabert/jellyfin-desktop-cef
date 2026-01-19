@@ -58,6 +58,8 @@ public:
     void setSpeed(double speed);
     void setNormalizationGain(double gainDb);  // ReplayGain/normalization in dB
     void setSubtitleTrack(int sid);  // -1 = off, 1+ = track index
+    void setAudioTrack(int aid);     // -1 = off, 1+ = track index
+    void setAudioDelay(double seconds);  // positive = audio later, negative = audio earlier
 
     // State queries
     double getPosition() const;

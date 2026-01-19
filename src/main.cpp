@@ -1071,6 +1071,11 @@ int main(int argc, char* argv[]) {
                         if (subIdx >= 0) {
                             mpv.setSubtitleTrack(subIdx);
                         }
+                        // Apply initial audio track if specified
+                        int audioIdx = jsonGetIntDefault(cmd.metadata, "_audioIdx", -1);
+                        if (audioIdx >= 0) {
+                            mpv.setAudioTrack(audioIdx);
+                        }
                         // mpv events will trigger state callbacks
                     } else {
                         client->emitError("Failed to load video");
@@ -1109,6 +1114,17 @@ int main(int argc, char* argv[]) {
                     mpv.setSpeed(speed);
                 } else if (cmd.cmd == "subtitle") {
                     mpv.setSubtitleTrack(cmd.intArg);
+                } else if (cmd.cmd == "audio") {
+                    mpv.setAudioTrack(cmd.intArg);
+                } else if (cmd.cmd == "audioDelay") {
+                    if (!cmd.metadata.empty()) {
+                        try {
+                            double delay = std::stod(cmd.metadata);
+                            mpv.setAudioDelay(delay);
+                        } catch (...) {
+                            std::cerr << "[MAIN] Invalid audioDelay value: " << cmd.metadata << std::endl;
+                        }
+                    }
                 } else if (cmd.cmd == "media_metadata") {
                     MediaMetadata meta = parseMetadataJson(cmd.url);
                     std::cerr << "[MAIN] Media metadata: title=" << meta.title << std::endl;

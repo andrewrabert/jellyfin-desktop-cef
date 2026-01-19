@@ -170,11 +170,16 @@
                 console.log('[Media] player.setSubtitleStream:', index);
                 if (window.jmpNative) window.jmpNative.playerSetSubtitle(index != null ? index : -1);
             },
-            setAudioStream(stream) {
-                console.log('[Media] player.setAudioStream:', stream);
+            setAudioStream(index) {
+                console.log('[Media] player.setAudioStream:', index);
+                if (window.jmpNative) window.jmpNative.playerSetAudio(index != null ? index : -1);
             },
             setSubtitleDelay(ms) {
                 console.log('[Media] player.setSubtitleDelay:', ms);
+            },
+            setAudioDelay(ms) {
+                console.log('[Media] player.setAudioDelay:', ms);
+                if (window.jmpNative) window.jmpNative.playerSetAudioDelay(ms / 1000.0);
             },
             setVideoRectangle(x, y, w, h) {
                 // No-op for now, we always render fullscreen

@@ -268,11 +268,15 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
     if (name == "playerLoad") {
         std::string url = args->GetString(0).ToString();
         int startMs = args->GetSize() > 1 ? args->GetInt(1) : 0;
+        int audioIdx = args->GetSize() > 2 ? args->GetInt(2) : -1;
         int subIdx = args->GetSize() > 3 ? args->GetInt(3) : -1;
         std::string metadata = args->GetSize() > 4 ? args->GetString(4).ToString() : "{}";
-        // Encode subIdx in metadata JSON
-        if (subIdx >= 0 && metadata.size() > 1) {
-            metadata = "{\"_subIdx\":" + std::to_string(subIdx) + "," + metadata.substr(1);
+        // Encode track indices in metadata JSON
+        std::string prefix = "{";
+        if (audioIdx >= 0) prefix += "\"_audioIdx\":" + std::to_string(audioIdx) + ",";
+        if (subIdx >= 0) prefix += "\"_subIdx\":" + std::to_string(subIdx) + ",";
+        if (prefix.size() > 1 && metadata.size() > 1) {
+            metadata = prefix + metadata.substr(1);
         }
         on_player_msg_("load", url, startMs, metadata);
         return true;
@@ -304,6 +308,14 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
     } else if (name == "playerSetSubtitle") {
         int sid = args->GetInt(0);
         on_player_msg_("subtitle", "", sid, "");
+        return true;
+    } else if (name == "playerSetAudio") {
+        int aid = args->GetInt(0);
+        on_player_msg_("audio", "", aid, "");
+        return true;
+    } else if (name == "playerSetAudioDelay") {
+        double delay = args->GetDouble(0);
+        on_player_msg_("audioDelay", "", 0, std::to_string(delay));
         return true;
     } else if (name == "saveServerUrl") {
         std::string url = args->GetString(0).ToString();
