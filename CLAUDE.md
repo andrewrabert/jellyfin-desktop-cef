@@ -16,6 +16,7 @@ cmake --build build
 - `video.c` - main rendering, uses `map_scaler()` for proper filtering
 - `context.c` - Vulkan FBO wrapping for libmpv
 - `libmpv_gpu_next.c` - render backend glue
+- **Never call sync mpv API (`mpv_get_property`, etc.) from event callbacks** - causes deadlock during video init. Use property observation or async variants instead.
 
 ## Debugging
 - For mpv (third_party/mpv) and external Jellyfin repos (jellyfin-web, jellyfin-desktop): investigate source code directly before suggesting debug logs that require manual user action

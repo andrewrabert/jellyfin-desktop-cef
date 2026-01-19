@@ -154,6 +154,7 @@ void MpvPlayerVk::handleMpvEvent(mpv_event* event) {
             break;
         }
         default:
+            std::cerr << "[MPV] Unhandled event: " << mpv_event_name(event->event_id) << std::endl;
             break;
     }
 }

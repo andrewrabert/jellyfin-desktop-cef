@@ -753,9 +753,9 @@ int main(int argc, char* argv[]) {
     });
     mpv.setPlayingCallback([&]() {
         // FILE_LOADED - initial playback start
+        // NOTE: Don't call mpv_get_property from inside event callback - can deadlock
         client->emitPlaying();
-        client->updatePosition(mpv.getPosition());
-        mediaSession.setPosition(static_cast<int64_t>(mpv.getPosition() * 1000.0));
+        // Position will be updated via property observation
         mediaSession.setPlaybackState(PlaybackState::Playing);
     });
     mpv.setStateCallback([&](bool paused) {
@@ -763,15 +763,13 @@ int main(int argc, char* argv[]) {
         if (!mpv.isPlaying()) return;
 
         // pause property changed - pause/resume
-        double pos = mpv.getPosition();
-        client->updatePosition(pos);
+        // NOTE: Don't call mpv_get_property from inside event callback - can deadlock
+        // Position will be updated via property observation
         if (paused) {
             client->emitPaused();
-            mediaSession.setPosition(static_cast<int64_t>(pos * 1000.0));
             mediaSession.setPlaybackState(PlaybackState::Paused);
         } else {
             client->emitPlaying();
-            mediaSession.setPosition(static_cast<int64_t>(pos * 1000.0));
             mediaSession.setPlaybackState(PlaybackState::Playing);
         }
     });
