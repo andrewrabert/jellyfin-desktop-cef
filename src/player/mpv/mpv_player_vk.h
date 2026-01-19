@@ -30,6 +30,7 @@ public:
     // Buffered range in ticks (100ns units, matching jellyfin-web)
     struct BufferedRange { int64_t start; int64_t end; };
     using BufferedRangesCallback = std::function<void(const std::vector<BufferedRange>&)>;
+    using ErrorCallback = std::function<void(const std::string& error)>;
 
     MpvPlayerVk();
     ~MpvPlayerVk();
@@ -80,6 +81,7 @@ public:
     void setBufferingCallback(BufferingCallback cb) { on_buffering_ = cb; }
     void setCoreIdleCallback(CoreIdleCallback cb) { on_core_idle_ = cb; }
     void setBufferedRangesCallback(BufferedRangesCallback cb) { on_buffered_ranges_ = cb; }
+    void setErrorCallback(ErrorCallback cb) { on_error_ = cb; }
 
     bool isHdr() const { return subsurface_ && subsurface_->isHdr(); }
     VideoSurface* subsurface() const { return subsurface_; }
@@ -105,6 +107,7 @@ private:
     BufferingCallback on_buffering_;
     CoreIdleCallback on_core_idle_;
     BufferedRangesCallback on_buffered_ranges_;
+    ErrorCallback on_error_;
 
     std::atomic<bool> needs_redraw_{false};
     std::atomic<bool> has_events_{false};

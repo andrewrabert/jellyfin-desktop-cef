@@ -826,6 +826,17 @@ int main(int argc, char* argv[]) {
         (void)idle;
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
     });
+    mpv.setErrorCallback([&](const std::string& error) {
+        std::cerr << "[MAIN] Playback error: " << error << std::endl;
+        has_video = false;
+#ifndef __APPLE__
+        if (has_subsurface) {
+            subsurface.setVisible(false);
+        }
+#endif
+        client->emitError(error);
+        mediaSession.setPlaybackState(PlaybackState::Stopped);
+    });
 
     // Auto-load test video if provided via --video
     if (!test_video.empty()) {

@@ -127,12 +127,17 @@ void MpvPlayerVk::handleMpvEvent(mpv_event* event) {
             break;
         case MPV_EVENT_END_FILE: {
             mpv_event_end_file* ef = static_cast<mpv_event_end_file*>(event->data);
-            std::cerr << "[MPV] END_FILE reason=" << ef->reason << " (0=EOF, 2=STOP)" << std::endl;
+            std::cerr << "[MPV] END_FILE reason=" << ef->reason << " (0=EOF, 2=STOP, 4=ERROR)" << std::endl;
             // With keep-open=yes, EOF reason won't fire (handled by eof-reached property)
             // STOP reason fires on explicit stop command
             if (ef->reason == MPV_END_FILE_REASON_STOP) {
                 playing_ = false;
                 if (on_canceled_) on_canceled_();
+            } else if (ef->reason == MPV_END_FILE_REASON_ERROR) {
+                playing_ = false;
+                std::string error = mpv_error_string(ef->error);
+                std::cerr << "[MPV] Playback error: " << error << std::endl;
+                if (on_error_) on_error_(error);
             }
             // Note: EOF/QUIT/REDIRECT reasons are handled by eof-reached property observation
             break;
@@ -172,6 +177,9 @@ bool MpvPlayerVk::init(VulkanContext* vk, VideoSurface* subsurface) {
     mpv_set_option_string(mpv_, "video-sync", "audio");  // Simple audio sync, no frame interpolation
     mpv_set_option_string(mpv_, "interpolation", "no");  // Disable motion interpolation
     mpv_set_option_string(mpv_, "ytdl", "no");  // Disable youtube-dl
+    // Discard audio output if no audio device could be opened
+    // Prevents blocking/crashes on audio errors (like jellyfin-desktop)
+    mpv_set_option_string(mpv_, "audio-fallback-to-null", "yes");
 
     // HDR output configuration
     bool use_hdr = subsurface_ && subsurface_->isHdr();
@@ -291,12 +299,15 @@ bool MpvPlayerVk::loadFile(const std::string& path, double startSeconds) {
     // Clear pause state before loading - ensures playback starts
     // (pause may persist from previous track)
     int pause = 0;
-    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &pause);
+    mpv_set_property_async(mpv_, 0, "pause", MPV_FORMAT_FLAG, &pause);
 
+    // Use async command to avoid blocking main thread on load failures
     const char* cmd[] = {"loadfile", path.c_str(), nullptr};
-    int ret = mpv_command(mpv_, cmd);
+    int ret = mpv_command_async(mpv_, 0, cmd);
     if (ret >= 0) {
         playing_ = true;
+    } else {
+        std::cerr << "[MPV] loadFile async failed: " << mpv_error_string(ret) << std::endl;
     }
     return ret >= 0;
 }
@@ -304,44 +315,44 @@ bool MpvPlayerVk::loadFile(const std::string& path, double startSeconds) {
 void MpvPlayerVk::stop() {
     if (!mpv_) return;
     const char* cmd[] = {"stop", nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
     playing_ = false;
 }
 
 void MpvPlayerVk::pause() {
     if (!mpv_) return;
     int pause = 1;
-    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &pause);
+    mpv_set_property_async(mpv_, 0, "pause", MPV_FORMAT_FLAG, &pause);
 }
 
 void MpvPlayerVk::play() {
     if (!mpv_) return;
     int pause = 0;
-    mpv_set_property(mpv_, "pause", MPV_FORMAT_FLAG, &pause);
+    mpv_set_property_async(mpv_, 0, "pause", MPV_FORMAT_FLAG, &pause);
 }
 
 void MpvPlayerVk::seek(double seconds) {
     if (!mpv_) return;
     std::string time_str = std::to_string(seconds);
     const char* cmd[] = {"seek", time_str.c_str(), "absolute", nullptr};
-    mpv_command(mpv_, cmd);
+    mpv_command_async(mpv_, 0, cmd);
 }
 
 void MpvPlayerVk::setVolume(int volume) {
     if (!mpv_) return;
     double vol = static_cast<double>(volume);
-    mpv_set_property(mpv_, "volume", MPV_FORMAT_DOUBLE, &vol);
+    mpv_set_property_async(mpv_, 0, "volume", MPV_FORMAT_DOUBLE, &vol);
 }
 
 void MpvPlayerVk::setMuted(bool muted) {
     if (!mpv_) return;
     int m = muted ? 1 : 0;
-    mpv_set_property(mpv_, "mute", MPV_FORMAT_FLAG, &m);
+    mpv_set_property_async(mpv_, 0, "mute", MPV_FORMAT_FLAG, &m);
 }
 
 void MpvPlayerVk::setSpeed(double speed) {
     if (!mpv_) return;
-    mpv_set_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &speed);
+    mpv_set_property_async(mpv_, 0, "speed", MPV_FORMAT_DOUBLE, &speed);
 }
 
 void MpvPlayerVk::setNormalizationGain(double gainDb) {
@@ -365,7 +376,7 @@ void MpvPlayerVk::setSubtitleTrack(int sid) {
         mpv_set_property_string(mpv_, "sid", "no");
     } else {
         int64_t id = sid;
-        mpv_set_property(mpv_, "sid", MPV_FORMAT_INT64, &id);
+        mpv_set_property_async(mpv_, 0, "sid", MPV_FORMAT_INT64, &id);
     }
 }
 
