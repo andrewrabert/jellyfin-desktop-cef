@@ -9,6 +9,65 @@
 #ifndef GL_BGRA_EXT
 #define GL_BGRA_EXT GL_BGRA
 #endif
+#elif defined(_WIN32)
+// Windows: Load OpenGL extension function pointers
+static PFNGLGENBUFFERSPROC glGenBuffers = nullptr;
+static PFNGLBINDBUFFERPROC glBindBuffer = nullptr;
+static PFNGLBUFFERDATAPROC glBufferData = nullptr;
+static PFNGLDELETEBUFFERSPROC glDeleteBuffers = nullptr;
+static PFNGLMAPBUFFERRANGEPROC glMapBufferRange = nullptr;
+static PFNGLUNMAPBUFFERPROC glUnmapBuffer = nullptr;
+static PFNGLGENVERTEXARRAYSPROC glGenVertexArrays = nullptr;
+static PFNGLBINDVERTEXARRAYPROC glBindVertexArray = nullptr;
+static PFNGLDELETEVERTEXARRAYSPROC glDeleteVertexArrays = nullptr;
+static PFNGLCREATESHADERPROC glCreateShader = nullptr;
+static PFNGLSHADERSOURCEPROC glShaderSource = nullptr;
+static PFNGLCOMPILESHADERPROC glCompileShader = nullptr;
+static PFNGLGETSHADERIVPROC glGetShaderiv = nullptr;
+static PFNGLGETSHADERINFOLOGPROC glGetShaderInfoLog = nullptr;
+static PFNGLDELETESHADERPROC glDeleteShader = nullptr;
+static PFNGLCREATEPROGRAMPROC glCreateProgram = nullptr;
+static PFNGLATTACHSHADERPROC glAttachShader = nullptr;
+static PFNGLLINKPROGRAMPROC glLinkProgram = nullptr;
+static PFNGLGETPROGRAMIVPROC glGetProgramiv = nullptr;
+static PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog = nullptr;
+static PFNGLDELETEPROGRAMPROC glDeleteProgram = nullptr;
+static PFNGLUSEPROGRAMPROC glUseProgram = nullptr;
+static PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation = nullptr;
+static PFNGLUNIFORM1FPROC glUniform1f = nullptr;
+static PFNGLACTIVETEXTUREPROC glActiveTexture = nullptr;
+
+static bool s_wglExtensionsLoaded = false;
+
+static void loadWGLExtensions() {
+    if (s_wglExtensionsLoaded) return;
+    glGenBuffers = (PFNGLGENBUFFERSPROC)wglGetProcAddress("glGenBuffers");
+    glBindBuffer = (PFNGLBINDBUFFERPROC)wglGetProcAddress("glBindBuffer");
+    glBufferData = (PFNGLBUFFERDATAPROC)wglGetProcAddress("glBufferData");
+    glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)wglGetProcAddress("glDeleteBuffers");
+    glMapBufferRange = (PFNGLMAPBUFFERRANGEPROC)wglGetProcAddress("glMapBufferRange");
+    glUnmapBuffer = (PFNGLUNMAPBUFFERPROC)wglGetProcAddress("glUnmapBuffer");
+    glGenVertexArrays = (PFNGLGENVERTEXARRAYSPROC)wglGetProcAddress("glGenVertexArrays");
+    glBindVertexArray = (PFNGLBINDVERTEXARRAYPROC)wglGetProcAddress("glBindVertexArray");
+    glDeleteVertexArrays = (PFNGLDELETEVERTEXARRAYSPROC)wglGetProcAddress("glDeleteVertexArrays");
+    glCreateShader = (PFNGLCREATESHADERPROC)wglGetProcAddress("glCreateShader");
+    glShaderSource = (PFNGLSHADERSOURCEPROC)wglGetProcAddress("glShaderSource");
+    glCompileShader = (PFNGLCOMPILESHADERPROC)wglGetProcAddress("glCompileShader");
+    glGetShaderiv = (PFNGLGETSHADERIVPROC)wglGetProcAddress("glGetShaderiv");
+    glGetShaderInfoLog = (PFNGLGETSHADERINFOLOGPROC)wglGetProcAddress("glGetShaderInfoLog");
+    glDeleteShader = (PFNGLDELETESHADERPROC)wglGetProcAddress("glDeleteShader");
+    glCreateProgram = (PFNGLCREATEPROGRAMPROC)wglGetProcAddress("glCreateProgram");
+    glAttachShader = (PFNGLATTACHSHADERPROC)wglGetProcAddress("glAttachShader");
+    glLinkProgram = (PFNGLLINKPROGRAMPROC)wglGetProcAddress("glLinkProgram");
+    glGetProgramiv = (PFNGLGETPROGRAMIVPROC)wglGetProcAddress("glGetProgramiv");
+    glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)wglGetProcAddress("glGetProgramInfoLog");
+    glDeleteProgram = (PFNGLDELETEPROGRAMPROC)wglGetProcAddress("glDeleteProgram");
+    glUseProgram = (PFNGLUSEPROGRAMPROC)wglGetProcAddress("glUseProgram");
+    glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)wglGetProcAddress("glGetUniformLocation");
+    glUniform1f = (PFNGLUNIFORM1FPROC)wglGetProcAddress("glUniform1f");
+    glActiveTexture = (PFNGLACTIVETEXTUREPROC)wglGetProcAddress("glActiveTexture");
+    s_wglExtensionsLoaded = true;
+}
 #else
 #include <unistd.h>
 #endif
@@ -62,6 +121,28 @@ void main() {
     fragColor = color * alpha;
 }
 )";
+#elif defined(_WIN32)
+// Windows: Desktop OpenGL 2.1+ with GL_TEXTURE_2D
+static const char* vert_src = R"(#version 130
+out vec2 texCoord;
+void main() {
+    vec2 pos = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    texCoord = vec2(pos.x, 1.0 - pos.y);
+    gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+
+static const char* frag_src = R"(#version 130
+in vec2 texCoord;
+out vec4 fragColor;
+uniform sampler2D overlayTex;
+uniform float alpha;
+void main() {
+    vec4 color = texture(overlayTex, texCoord);
+    // CEF provides BGRA - swizzle to RGBA
+    fragColor = color.bgra * alpha;
+}
+)";
 #else
 // Linux: OpenGL ES 3.0
 static const char* vert_src = R"(#version 300 es
@@ -99,6 +180,10 @@ bool OpenGLCompositor::init(GLContext* ctx, uint32_t width, uint32_t height, boo
     height_ = height;
     use_gpu_path_ = use_gpu_path;
 
+#ifdef _WIN32
+    loadWGLExtensions();
+#endif
+
     if (!createTexture()) return false;
     if (!createShader()) return false;
 
@@ -130,6 +215,15 @@ bool OpenGLCompositor::createTexture() {
 
     // Software path: allocate texture storage and PBOs
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+#elif defined(_WIN32)
+    // Windows: Software path only
+    // Use GL_RGBA (universally supported) - shader swizzles BGRA->RGBA
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    GLenum texErr = glGetError();
+    if (texErr != GL_NO_ERROR) {
+        std::cerr << "[GLCompositor] glTexImage2D failed: " << texErr << std::endl;
+        return false;
+    }
 #else
     // DMA-BUF path: EGLImage provides texture backing, skip PBO setup
     if (use_gpu_path_) {
@@ -404,7 +498,7 @@ bool OpenGLCompositor::importQueuedIOSurface() {
     return true;
 }
 
-#else
+#elif defined(__linux__)
 // Linux: DMA-BUF import
 void OpenGLCompositor::queueDmaBuf(const AcceleratedPaintInfo& info) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -583,6 +677,9 @@ void OpenGLCompositor::resize(uint32_t width, uint32_t height) {
         pending_iosurface_ = nullptr;
         iosurface_queued_ = false;
     }
+#elif defined(_WIN32)
+    // Windows: Software path only, just wait for GPU
+    glFinish();
 #else
     // Don't close pending_dmabufs_ here - they'll be cleaned up when a
     // matching frame arrives in importQueuedDmaBuf()
@@ -650,6 +747,8 @@ void OpenGLCompositor::cleanup() {
         CFRelease(pending_iosurface_);
         pending_iosurface_ = nullptr;
     }
+#elif defined(_WIN32)
+    // Windows: Software path only, nothing extra to clean up
 #else
     // Release all EGLImages in ring buffer
     for (int i = 0; i < NUM_BUFFERS; i++) {

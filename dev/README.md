@@ -1,6 +1,6 @@
 # Development
 
-## Quick Start
+## Quick Start (Linux/macOS)
 
 ```sh
 git clone https://github.com/jellyfin-labs/jellyfin-desktop-cef
@@ -10,6 +10,17 @@ python3 dev/download_cef.py
 cmake -B build -G Ninja
 cmake --build build
 ./build/jellyfin-desktop-cef
+```
+
+## Quick Start (Windows)
+
+See [dev/windows/README.md](windows/README.md) for detailed instructions.
+
+```powershell
+git clone https://github.com/jellyfin-labs/jellyfin-desktop-cef
+cd jellyfin-desktop-cef
+.\dev\windows\setup.ps1
+.\dev\windows\build.ps1
 ```
 
 ## Web Debugger

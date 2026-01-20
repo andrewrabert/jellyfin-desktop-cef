@@ -31,14 +31,22 @@ void activateMacWindow(SDL_Window* window);
 #include "player/media_session.h"
 #include "player/macos/media_session_macos.h"
 #include "PFMoveApplication.h"
+#include "player/mpv/mpv_player_vk.h"
+#elif defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include "context/wgl_context.h"
+#include "player/media_session.h"
+#include "compositor/opengl_compositor.h"
+#include "player/mpv/mpv_player_gl.h"
 #else
 #include "context/egl_context.h"
 #include "platform/wayland_subsurface.h"
 #include "player/media_session.h"
 #include "player/mpris/media_session_mpris.h"
 #include "compositor/opengl_compositor.h"
-#endif
 #include "player/mpv/mpv_player_vk.h"
+#endif
 #include "cef/cef_app.h"
 #include "cef/cef_client.h"
 #include "input/input_layer.h"
@@ -282,7 +290,11 @@ int main(int argc, char* argv[]) {
     }
 
     // CEF initialization
+#ifdef _WIN32
+    CefMainArgs main_args(GetModuleHandle(NULL));
+#else
     CefMainArgs main_args(argc, argv);
+#endif
     CefRefPtr<App> app(new App());
 
     std::cerr << "Calling CefExecuteProcess..." << std::endl;
@@ -370,6 +382,47 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
+#elif defined(_WIN32)
+    // Windows: Initialize WGL context for OpenGL rendering
+    WGLContext wgl;
+    if (!wgl.init(window)) {
+        std::cerr << "WGL init failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    // Initialize mpv player with OpenGL backend (better Wine compatibility)
+    MpvPlayerGL mpv;
+    bool has_video = false;
+    bool video_needs_rerender = false;
+    double current_playback_rate = 1.0;
+    bool has_subsurface = false;  // No separate video layer on Windows OpenGL path
+    if (!mpv.init(&wgl)) {
+        std::cerr << "MpvPlayerGL init failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    std::cerr << "Using OpenGL for video rendering (no HDR)" << std::endl;
+
+    // Initialize OpenGL compositor for CEF overlay
+    OpenGLCompositor compositor;
+    if (!compositor.init(&wgl, width, height, false)) {  // Software path only on Windows for now
+        std::cerr << "OpenGLCompositor init failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    // Second compositor for overlay browser
+    OpenGLCompositor overlay_compositor;
+    if (!overlay_compositor.init(&wgl, width, height, false)) {
+        std::cerr << "Overlay compositor init failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
 #else
     // Linux: Initialize EGL context for OpenGL rendering
     EGLContext_ egl;
@@ -435,8 +488,10 @@ int main(int argc, char* argv[]) {
     settings.windowless_rendering_enabled = true;
 #ifdef __APPLE__
     // macOS: use external_message_pump for responsive input handling
-    // (multi_threaded_message_loop only supported on Windows/Linux)
     settings.external_message_pump = true;
+#elif defined(_WIN32)
+    // Windows: multi_threaded_message_loop is supported
+    settings.multi_threaded_message_loop = true;
 #else
     settings.multi_threaded_message_loop = true;
 #endif
@@ -446,6 +501,13 @@ int main(int argc, char* argv[]) {
     CefString(&settings.framework_dir_path).FromString((cef_framework_path / "Chromium Embedded Framework.framework").string());
     // Use main executable as subprocess - it handles CefExecuteProcess early
     CefString(&settings.browser_subprocess_path).FromString((exe_path / "jellyfin-desktop-cef").string());
+#elif defined(_WIN32)
+    // Windows: Get exe path
+    wchar_t exe_buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+    std::filesystem::path exe_path = std::filesystem::path(exe_buf).parent_path();
+    CefString(&settings.resources_dir_path).FromString(exe_path.string());
+    CefString(&settings.locales_dir_path).FromString((exe_path / "locales").string());
 #else
     std::filesystem::path exe_path = std::filesystem::canonical("/proc/self/exe").parent_path();
 #ifdef CEF_RESOURCES_DIR
@@ -534,6 +596,8 @@ int main(int argc, char* argv[]) {
     MediaSession mediaSession;
 #ifdef __APPLE__
     mediaSession.addBackend(createMacOSMediaBackend(&mediaSession));
+#elif defined(_WIN32)
+    // Windows: No media session backend for now (SMTC can be added later)
 #else
     mediaSession.addBackend(createMprisBackend(&mediaSession));
 #endif
@@ -653,8 +717,8 @@ int main(int argc, char* argv[]) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
             pending_cmds.push_back({cmd, arg, intArg, 0.0, metadata});
         },
-#ifdef __APPLE__
-        nullptr,  // No GPU accelerated paint on macOS (using Metal compositor)
+#if defined(__APPLE__) || defined(_WIN32)
+        nullptr,  // No GPU accelerated paint on macOS/Windows
 #else
         [&](const AcceleratedPaintInfo& info) {
             // GPU accelerated paint - queue DMA-BUF for import in render loop
@@ -692,7 +756,7 @@ int main(int argc, char* argv[]) {
 
     CefWindowInfo window_info;
     window_info.SetAsWindowless(0);
-#if defined(CEF_X11) || defined(__linux__)
+#if defined(__linux__) && !defined(_WIN32)
     window_info.shared_texture_enabled = use_gpu_overlay;
 #endif
 
@@ -804,7 +868,7 @@ int main(int argc, char* argv[]) {
     mpv.setFinishedCallback([&]() {
         std::cerr << "[MAIN] Track finished naturally (EOF), emitting finished signal" << std::endl;
         has_video = false;
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
         if (has_subsurface) {
             subsurface.setVisible(false);
         }
@@ -815,7 +879,7 @@ int main(int argc, char* argv[]) {
     mpv.setCanceledCallback([&]() {
         std::cerr << "[MAIN] Track canceled (user stop), emitting canceled signal" << std::endl;
         has_video = false;
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
         if (has_subsurface) {
             subsurface.setVisible(false);
         }
@@ -837,7 +901,7 @@ int main(int argc, char* argv[]) {
             mediaSession.setRate(current_playback_rate);
         }
     });
-    mpv.setBufferedRangesCallback([&](const std::vector<MpvPlayerVk::BufferedRange>& ranges) {
+    mpv.setBufferedRangesCallback([&](const auto& ranges) {
         // Send buffered ranges to JS as JSON array
         std::string json = "[";
         for (size_t i = 0; i < ranges.size(); i++) {
@@ -855,7 +919,7 @@ int main(int argc, char* argv[]) {
     mpv.setErrorCallback([&](const std::string& error) {
         std::cerr << "[MAIN] Playback error: " << error << std::endl;
         has_video = false;
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
         if (has_subsurface) {
             subsurface.setVisible(false);
         }
@@ -873,6 +937,8 @@ int main(int argc, char* argv[]) {
             if (has_subsurface && videoLayer.isHdr()) {
                 // macOS EDR is automatic
             }
+#elif defined(_WIN32)
+            // Windows HDR is automatic via DXGI colorspace
 #else
             if (has_subsurface && subsurface.isHdr()) {
                 subsurface.setColorspace();
@@ -905,7 +971,7 @@ int main(int argc, char* argv[]) {
         // Event-driven: wait for events when idle, poll when active
         SDL_Event event;
         bool have_event;
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32)
         if (needs_render || has_video || compositor.hasPendingContent()) {
 #else
         if (needs_render || has_video || compositor.hasPendingContent() || compositor.hasPendingDmaBuf()) {
@@ -1006,6 +1072,14 @@ int main(int argc, char* argv[]) {
                 if (has_subsurface) {
                     videoLayer.resize(current_width, current_height);
                 }
+#elif defined(_WIN32)
+                // Resize WGL context
+                wgl.resize(current_width, current_height);
+                compositor.resize(current_width, current_height);
+                overlay_compositor.resize(current_width, current_height);
+                client->resize(current_width, current_height);
+                overlay_client->resize(current_width, current_height);
+                video_needs_rerender = true;  // Force video rerender on resize
 #else
                 // Resize EGL context (handles wl_egl_window resize)
                 egl.resize(current_width, current_height);
@@ -1052,7 +1126,7 @@ int main(int argc, char* argv[]) {
 
         // Determine if we need to render this frame
         // With vsync, always render to maintain consistent frame pacing
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32)
         needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || overlay_state == OverlayState::FADING;
 #else
         needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || compositor.hasPendingDmaBuf() || overlay_state == OverlayState::FADING;
@@ -1087,6 +1161,8 @@ int main(int argc, char* argv[]) {
                         if (has_subsurface && videoLayer.isHdr()) {
                             // macOS EDR is automatic
                         }
+#elif defined(_WIN32)
+                        // Windows HDR is automatic via DXGI colorspace
 #else
                         if (has_subsurface && subsurface.isHdr()) {
                             subsurface.setColorspace();
@@ -1110,7 +1186,7 @@ int main(int argc, char* argv[]) {
                     mpv.stop();
                     has_video = false;
                     video_ready = false;
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
                     if (has_subsurface) {
                         subsurface.setVisible(false);
                     }
@@ -1258,7 +1334,7 @@ int main(int argc, char* argv[]) {
             overlay_alpha = 1.0f;
         } else {
             float fade_progress = (idle_sec - IDLE_TIMEOUT_SEC) / FADE_DURATION_SEC;
-            overlay_alpha = std::max(0.0f, 1.0f - fade_progress);
+            overlay_alpha = (std::max)(0.0f, 1.0f - fade_progress);
         }
 
         // Menu overlay blending
@@ -1294,6 +1370,37 @@ int main(int argc, char* argv[]) {
                 overlay_compositor.composite(current_width, current_height, overlay_browser_alpha);
             }
         }
+#elif defined(_WIN32)
+        // Windows: OpenGL mpv rendering directly to default framebuffer
+        flushPaintBuffer();
+        compositor.flushOverlay();
+
+        // Clear to black
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // Render video first (underneath the browser UI)
+        if (has_video && (mpv.hasFrame() || video_needs_rerender)) {
+            mpv.render(current_width, current_height, 0);
+            video_ready = true;
+            video_needs_rerender = false;
+        }
+
+        // Composite main browser on top of video
+        if (test_video.empty() && compositor.hasValidOverlay()) {
+            float alpha = video_ready ? overlay_alpha : 1.0f;
+            compositor.composite(current_width, current_height, alpha);
+        }
+
+        // Composite overlay browser (with fade alpha)
+        if (overlay_state != OverlayState::HIDDEN && overlay_browser_alpha > 0.01f) {
+            overlay_compositor.flushOverlay();
+            if (overlay_compositor.hasValidOverlay()) {
+                overlay_compositor.composite(current_width, current_height, overlay_browser_alpha);
+            }
+        }
+
+        wgl.swapBuffers();
 #else
         if (has_subsurface && ((has_video && mpv.hasFrame()) || video_needs_rerender)) {
             VkImage sub_image;
@@ -1349,6 +1456,8 @@ int main(int argc, char* argv[]) {
     if (has_subsurface) {
         videoLayer.cleanup();
     }
+#elif defined(_WIN32)
+    wgl.cleanup();
 #else
     if (has_subsurface) {
         subsurface.cleanup();

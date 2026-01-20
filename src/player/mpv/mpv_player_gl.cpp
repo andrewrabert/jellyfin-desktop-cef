@@ -1,0 +1,384 @@
+#include "player/mpv/mpv_player_gl.h"
+#include <mpv/client.h>
+#include <mpv/render.h>
+#include <mpv/render_gl.h>
+#include <iostream>
+#include <clocale>
+#include <cmath>
+
+MpvPlayerGL::MpvPlayerGL() = default;
+
+MpvPlayerGL::~MpvPlayerGL() {
+    cleanup();
+}
+
+void MpvPlayerGL::cleanup() {
+    if (render_ctx_) {
+        mpv_render_context_free(render_ctx_);
+        render_ctx_ = nullptr;
+    }
+    if (mpv_) {
+        mpv_terminate_destroy(mpv_);
+        mpv_ = nullptr;
+    }
+}
+
+void MpvPlayerGL::onMpvRedraw(void* ctx) {
+    MpvPlayerGL* player = static_cast<MpvPlayerGL*>(ctx);
+    player->needs_redraw_ = true;
+    if (player->redraw_callback_) {
+        player->redraw_callback_();
+    }
+}
+
+void MpvPlayerGL::onMpvWakeup(void* ctx) {
+    MpvPlayerGL* player = static_cast<MpvPlayerGL*>(ctx);
+    player->has_events_ = true;
+}
+
+void MpvPlayerGL::processEvents() {
+    if (!mpv_ || !has_events_.exchange(false)) return;
+
+    while (true) {
+        mpv_event* event = mpv_wait_event(mpv_, 0);
+        if (event->event_id == MPV_EVENT_NONE) break;
+        handleMpvEvent(event);
+    }
+}
+
+void MpvPlayerGL::handleMpvEvent(mpv_event* event) {
+    switch (event->event_id) {
+        case MPV_EVENT_PROPERTY_CHANGE: {
+            mpv_event_property* prop = static_cast<mpv_event_property*>(event->data);
+            if (strcmp(prop->name, "playback-time") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
+                double pos = *static_cast<double*>(prop->data);
+                if (std::fabs(pos - last_position_) > 0.015) {
+                    last_position_ = pos;
+                    if (on_position_) on_position_(pos * 1000.0);
+                }
+            } else if (strcmp(prop->name, "duration") == 0 && prop->format == MPV_FORMAT_DOUBLE) {
+                double dur = *static_cast<double*>(prop->data);
+                if (on_duration_) on_duration_(dur * 1000.0);
+            } else if (strcmp(prop->name, "pause") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool paused = *static_cast<int*>(prop->data) != 0;
+                if (on_state_) on_state_(paused);
+            } else if (strcmp(prop->name, "seeking") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool seeking = *static_cast<int*>(prop->data) != 0;
+                if (seeking_ && !seeking) {
+                    if (on_seeked_) on_seeked_(last_position_ * 1000.0);
+                }
+                seeking_ = seeking;
+            } else if (strcmp(prop->name, "paused-for-cache") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool buffering = *static_cast<int*>(prop->data) != 0;
+                if (on_buffering_) on_buffering_(buffering, last_position_ * 1000.0);
+            } else if (strcmp(prop->name, "core-idle") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool idle = *static_cast<int*>(prop->data) != 0;
+                if (on_core_idle_) on_core_idle_(idle, last_position_ * 1000.0);
+            } else if (strcmp(prop->name, "eof-reached") == 0 && prop->format == MPV_FORMAT_FLAG) {
+                bool eof = *static_cast<int*>(prop->data) != 0;
+                if (eof && playing_) {
+                    std::cerr << "[MPV-GL] eof-reached=true, track ended naturally" << std::endl;
+                    playing_ = false;
+                    if (on_finished_) on_finished_();
+                }
+            } else if (strcmp(prop->name, "demuxer-cache-state") == 0 && prop->format == MPV_FORMAT_NODE) {
+                if (on_buffered_ranges_) {
+                    std::vector<BufferedRange> ranges;
+                    mpv_node* node = static_cast<mpv_node*>(prop->data);
+                    if (node && node->format == MPV_FORMAT_NODE_MAP) {
+                        for (int i = 0; i < node->u.list->num; i++) {
+                            if (strcmp(node->u.list->keys[i], "seekable-ranges") == 0) {
+                                mpv_node* arr = &node->u.list->values[i];
+                                if (arr->format == MPV_FORMAT_NODE_ARRAY) {
+                                    for (int j = 0; j < arr->u.list->num; j++) {
+                                        mpv_node* range = &arr->u.list->values[j];
+                                        if (range->format == MPV_FORMAT_NODE_MAP) {
+                                            double start = 0, end = 0;
+                                            for (int k = 0; k < range->u.list->num; k++) {
+                                                if (strcmp(range->u.list->keys[k], "start") == 0 && range->u.list->values[k].format == MPV_FORMAT_DOUBLE)
+                                                    start = range->u.list->values[k].u.double_;
+                                                else if (strcmp(range->u.list->keys[k], "end") == 0 && range->u.list->values[k].format == MPV_FORMAT_DOUBLE)
+                                                    end = range->u.list->values[k].u.double_;
+                                            }
+                                            ranges.push_back({
+                                                static_cast<int64_t>(start * 10000000.0),
+                                                static_cast<int64_t>(end * 10000000.0)
+                                            });
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    on_buffered_ranges_(ranges);
+                }
+            }
+            break;
+        }
+        case MPV_EVENT_START_FILE:
+            playing_ = true;
+            break;
+        case MPV_EVENT_FILE_LOADED:
+            if (on_playing_) on_playing_();
+            break;
+        case MPV_EVENT_END_FILE: {
+            mpv_event_end_file* ef = static_cast<mpv_event_end_file*>(event->data);
+            std::cerr << "[MPV-GL] END_FILE reason=" << ef->reason << std::endl;
+            if (ef->reason == MPV_END_FILE_REASON_STOP) {
+                playing_ = false;
+                if (on_canceled_) on_canceled_();
+            } else if (ef->reason == MPV_END_FILE_REASON_ERROR) {
+                playing_ = false;
+                std::string error = mpv_error_string(ef->error);
+                std::cerr << "[MPV-GL] Playback error: " << error << std::endl;
+                if (on_error_) on_error_(error);
+            }
+            break;
+        }
+        case MPV_EVENT_LOG_MESSAGE: {
+            auto* msg = static_cast<mpv_event_log_message*>(event->data);
+            std::string text = msg->text;
+            if (!text.empty() && text.back() == '\n') {
+                text.pop_back();
+            }
+            std::cerr << "[mpv/" << msg->prefix << "] " << text << std::endl;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void* gl_get_proc_address(void* ctx, const char* name) {
+#ifdef _WIN32
+    auto* wgl = static_cast<WGLContext*>(ctx);
+    return wgl->getProcAddress(name);
+#elif defined(__APPLE__)
+    (void)ctx;
+    // macOS: use dlsym for OpenGL functions
+    extern void* dlsym(void*, const char*);
+    return dlsym(RTLD_DEFAULT, name);
+#else
+    auto* egl = static_cast<EGLContext_*>(ctx);
+    return reinterpret_cast<void*>(eglGetProcAddress(name));
+#endif
+}
+
+bool MpvPlayerGL::init(GLContext* gl) {
+    gl_ = gl;
+
+    std::setlocale(LC_NUMERIC, "C");
+
+    mpv_ = mpv_create();
+    if (!mpv_) {
+        std::cerr << "mpv_create failed" << std::endl;
+        return false;
+    }
+
+    mpv_set_option_string(mpv_, "vo", "libmpv");
+    mpv_set_option_string(mpv_, "hwdec", "auto-safe");  // Allow hardware decoding
+    mpv_set_option_string(mpv_, "keep-open", "yes");
+    mpv_set_option_string(mpv_, "terminal", "no");
+    mpv_set_option_string(mpv_, "video-sync", "audio");
+    mpv_set_option_string(mpv_, "interpolation", "no");
+    mpv_set_option_string(mpv_, "ytdl", "no");
+    mpv_set_option_string(mpv_, "audio-fallback-to-null", "yes");
+
+    if (mpv_initialize(mpv_) < 0) {
+        std::cerr << "mpv_initialize failed" << std::endl;
+        return false;
+    }
+
+    mpv_request_log_messages(mpv_, "info");
+
+    mpv_observe_property(mpv_, 0, "playback-time", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "duration", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv_, 0, "pause", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv_, 0, "seeking", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv_, 0, "paused-for-cache", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv_, 0, "core-idle", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv_, 0, "eof-reached", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv_, 0, "demuxer-cache-state", MPV_FORMAT_NODE);
+
+    mpv_set_wakeup_callback(mpv_, onMpvWakeup, this);
+
+    // Set up OpenGL render context
+    mpv_opengl_init_params gl_init{};
+    gl_init.get_proc_address = gl_get_proc_address;
+    gl_init.get_proc_address_ctx = gl_;
+
+    int advanced_control = 1;
+
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL)},
+        {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init},
+        {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced_control},
+        {MPV_RENDER_PARAM_INVALID, nullptr}
+    };
+
+    int result = mpv_render_context_create(&render_ctx_, mpv_, params);
+    if (result < 0) {
+        std::cerr << "mpv_render_context_create (OpenGL) failed: " << mpv_error_string(result) << std::endl;
+        return false;
+    }
+
+    mpv_render_context_set_update_callback(render_ctx_, onMpvRedraw, this);
+
+    std::cerr << "mpv OpenGL render context created" << std::endl;
+    return true;
+}
+
+bool MpvPlayerGL::loadFile(const std::string& path, double startSeconds) {
+    if (startSeconds > 0.0) {
+        std::string startStr = std::to_string(startSeconds);
+        mpv_set_option_string(mpv_, "start", startStr.c_str());
+    } else {
+        mpv_set_option_string(mpv_, "start", "0");
+    }
+
+    int pause = 0;
+    mpv_set_property_async(mpv_, 0, "pause", MPV_FORMAT_FLAG, &pause);
+
+    const char* cmd[] = {"loadfile", path.c_str(), nullptr};
+    int ret = mpv_command_async(mpv_, 0, cmd);
+    if (ret >= 0) {
+        playing_ = true;
+    } else {
+        std::cerr << "[MPV-GL] loadFile async failed: " << mpv_error_string(ret) << std::endl;
+    }
+    return ret >= 0;
+}
+
+void MpvPlayerGL::stop() {
+    if (!mpv_) return;
+    const char* cmd[] = {"stop", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
+    playing_ = false;
+}
+
+void MpvPlayerGL::pause() {
+    if (!mpv_) return;
+    int pause = 1;
+    mpv_set_property_async(mpv_, 0, "pause", MPV_FORMAT_FLAG, &pause);
+}
+
+void MpvPlayerGL::play() {
+    if (!mpv_) return;
+    int pause = 0;
+    mpv_set_property_async(mpv_, 0, "pause", MPV_FORMAT_FLAG, &pause);
+}
+
+void MpvPlayerGL::seek(double seconds) {
+    if (!mpv_) return;
+    std::string time_str = std::to_string(seconds);
+    const char* cmd[] = {"seek", time_str.c_str(), "absolute", nullptr};
+    mpv_command_async(mpv_, 0, cmd);
+}
+
+void MpvPlayerGL::setVolume(int volume) {
+    if (!mpv_) return;
+    double vol = static_cast<double>(volume);
+    mpv_set_property_async(mpv_, 0, "volume", MPV_FORMAT_DOUBLE, &vol);
+}
+
+void MpvPlayerGL::setMuted(bool muted) {
+    if (!mpv_) return;
+    int m = muted ? 1 : 0;
+    mpv_set_property_async(mpv_, 0, "mute", MPV_FORMAT_FLAG, &m);
+}
+
+void MpvPlayerGL::setSpeed(double speed) {
+    if (!mpv_) return;
+    mpv_set_property_async(mpv_, 0, "speed", MPV_FORMAT_DOUBLE, &speed);
+}
+
+void MpvPlayerGL::setNormalizationGain(double gainDb) {
+    if (!mpv_) return;
+    if (gainDb == 0.0) {
+        mpv_set_property_string(mpv_, "af", "");
+    } else {
+        char filter[64];
+        snprintf(filter, sizeof(filter), "lavfi=[volume=%.2fdB]", gainDb);
+        mpv_set_property_string(mpv_, "af", filter);
+        std::cerr << "[mpv] Normalization gain: " << gainDb << " dB" << std::endl;
+    }
+}
+
+void MpvPlayerGL::setSubtitleTrack(int sid) {
+    if (!mpv_) return;
+    if (sid < 0) {
+        mpv_set_property_string(mpv_, "sid", "no");
+    } else {
+        int64_t id = sid;
+        mpv_set_property_async(mpv_, 0, "sid", MPV_FORMAT_INT64, &id);
+    }
+}
+
+void MpvPlayerGL::setAudioTrack(int aid) {
+    if (!mpv_) return;
+    if (aid < 0) {
+        mpv_set_property_string(mpv_, "aid", "no");
+    } else {
+        int64_t id = aid;
+        mpv_set_property_async(mpv_, 0, "aid", MPV_FORMAT_INT64, &id);
+    }
+}
+
+void MpvPlayerGL::setAudioDelay(double seconds) {
+    if (!mpv_) return;
+    mpv_set_property_async(mpv_, 0, "audio-delay", MPV_FORMAT_DOUBLE, &seconds);
+}
+
+double MpvPlayerGL::getPosition() const {
+    if (!mpv_) return 0;
+    double pos = 0;
+    mpv_get_property(mpv_, "time-pos", MPV_FORMAT_DOUBLE, &pos);
+    return pos;
+}
+
+double MpvPlayerGL::getDuration() const {
+    if (!mpv_) return 0;
+    double dur = 0;
+    mpv_get_property(mpv_, "duration", MPV_FORMAT_DOUBLE, &dur);
+    return dur;
+}
+
+double MpvPlayerGL::getSpeed() const {
+    if (!mpv_) return 1.0;
+    double speed = 1.0;
+    mpv_get_property(mpv_, "speed", MPV_FORMAT_DOUBLE, &speed);
+    return speed;
+}
+
+bool MpvPlayerGL::isPaused() const {
+    if (!mpv_) return false;
+    int paused = 0;
+    mpv_get_property(mpv_, "pause", MPV_FORMAT_FLAG, &paused);
+    return paused != 0;
+}
+
+bool MpvPlayerGL::hasFrame() const {
+    if (!render_ctx_) return false;
+    return (mpv_render_context_update(render_ctx_) & MPV_RENDER_UPDATE_FRAME) != 0;
+}
+
+void MpvPlayerGL::render(int width, int height, int fbo) {
+    if (!render_ctx_) return;
+
+    mpv_opengl_fbo fbo_params{};
+    fbo_params.fbo = fbo;
+    fbo_params.w = width;
+    fbo_params.h = height;
+    fbo_params.internal_format = 0;  // Let mpv decide
+
+    int flip_y = 1;  // OpenGL has Y=0 at bottom
+
+    mpv_render_param params[] = {
+        {MPV_RENDER_PARAM_OPENGL_FBO, &fbo_params},
+        {MPV_RENDER_PARAM_FLIP_Y, &flip_y},
+        {MPV_RENDER_PARAM_INVALID, nullptr}
+    };
+
+    mpv_render_context_render(render_ctx_, params);
+}

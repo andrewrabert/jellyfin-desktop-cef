@@ -2,8 +2,14 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
-#include <sys/stat.h>
 #include <thread>
+#ifdef _WIN32
+#include <direct.h>
+#define MKDIR(path) _mkdir(path)
+#else
+#include <sys/stat.h>
+#define MKDIR(path) mkdir(path, 0755)
+#endif
 
 Settings& Settings::instance() {
     static Settings instance;
@@ -13,6 +19,15 @@ Settings& Settings::instance() {
 std::string Settings::getConfigPath() {
     std::string config_dir;
 
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata && appdata[0]) {
+        config_dir = appdata;
+    } else {
+        config_dir = "C:\\";
+    }
+    config_dir += "\\jellyfin-desktop-cef";
+#else
     const char* xdg_config = std::getenv("XDG_CONFIG_HOME");
     if (xdg_config && xdg_config[0]) {
         config_dir = xdg_config;
@@ -24,9 +39,10 @@ std::string Settings::getConfigPath() {
             config_dir = "/tmp";
         }
     }
-
     config_dir += "/jellyfin-desktop-cef";
-    mkdir(config_dir.c_str(), 0755);
+#endif
+
+    MKDIR(config_dir.c_str());
 
     return config_dir + "/settings.json";
 }

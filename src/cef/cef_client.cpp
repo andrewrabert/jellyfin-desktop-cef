@@ -7,7 +7,7 @@
 #include <SDL3/SDL.h>
 #include <iostream>
 #include <mutex>
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_WIN32)
 #include <unistd.h>  // For dup()
 #endif
 
@@ -460,7 +460,7 @@ void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType 
     if (on_iosurface_paint_ && info.shared_texture_io_surface) {
         on_iosurface_paint_(static_cast<IOSurfaceRef>(info.shared_texture_io_surface), width_, height_);
     }
-#else
+#elif defined(__linux__)
     // Linux: DMA-BUF path
     if (on_accel_paint_) {
         AcceleratedPaintInfo paintInfo;
@@ -480,6 +480,12 @@ void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType 
 
         on_accel_paint_(paintInfo);
     }
+#else
+    // Windows: No GPU texture sharing yet, use software path via OnPaint
+    (void)browser;
+    (void)type;
+    (void)dirtyRects;
+    (void)info;
 #endif
 }
 

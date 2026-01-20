@@ -54,7 +54,7 @@ bool EmbeddedResourceHandler::Read(void* data_out,
     }
 
     size_t remaining = resource_.size - offset_;
-    size_t to_copy = std::min(remaining, static_cast<size_t>(bytes_to_read));
+    size_t to_copy = (std::min)(remaining, static_cast<size_t>(bytes_to_read));
     memcpy(data_out, resource_.data + offset_, to_copy);
     offset_ += to_copy;
     bytes_read = static_cast<int>(to_copy);

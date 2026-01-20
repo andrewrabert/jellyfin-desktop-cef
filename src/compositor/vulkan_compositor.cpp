@@ -2,7 +2,9 @@
 #include <iostream>
 #include <cstring>
 #include <vector>
+#ifndef _WIN32
 #include <unistd.h>  // For close()
+#endif
 
 #include <chrono>
 static auto _log_start = std::chrono::steady_clock::now();

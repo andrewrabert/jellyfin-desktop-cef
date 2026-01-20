@@ -22,6 +22,8 @@ PLATFORM_MAP = {
     ("Linux", "aarch64"): "linuxarm64",
     ("Darwin", "x86_64"): "macosx64",
     ("Darwin", "arm64"): "macosarm64",
+    ("Windows", "AMD64"): "windows64",
+    ("Windows", "ARM64"): "windowsarm64",
 }
 
 log = logging.getLogger(__name__)
@@ -183,7 +185,7 @@ def main():
     parser = argparse.ArgumentParser(description="Download CEF distribution")
     parser.add_argument(
         "--platform",
-        choices=["linux64", "linuxarm64", "macosx64", "macosarm64"],
+        choices=["linux64", "linuxarm64", "macosx64", "macosarm64", "windows64", "windowsarm64"],
         help="Target platform (default: auto-detect)",
     )
     parser.add_argument(

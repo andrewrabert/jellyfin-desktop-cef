@@ -10,6 +10,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Use static runtime on Windows to match CEF wrapper (which uses /MT)
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # Match CEF's compile flags for ABI compatibility
 if(UNIX AND NOT APPLE)
     add_compile_options(
@@ -66,6 +71,21 @@ if(APPLE)
         ${MEDIAPLAYER_FRAMEWORK}
         letsmove
     )
+elseif(WIN32)
+    # Windows: WGL for OpenGL, Vulkan available for video layer
+    find_package(OpenGL REQUIRED)
+
+    set(PLATFORM_SOURCES
+        src/context/wgl_context.cpp
+        src/platform/windows_video_layer.cpp
+        src/compositor/opengl_compositor.cpp
+        src/player/media_session.cpp
+    )
+    set(PLATFORM_LIBRARIES
+        OpenGL::GL
+        dwmapi
+    )
+    set(PLATFORM_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/third_party")
 else()
     # Linux: OpenGL/EGL, Wayland
     find_package(OpenGL REQUIRED COMPONENTS EGL OpenGL)
@@ -142,6 +162,8 @@ if(EXTERNAL_MPV_DIR)
     set(MPV_INCLUDE_DIRS "${EXTERNAL_MPV_DIR}/include")
     if(APPLE)
         set(MPV_LIBRARY "${EXTERNAL_MPV_DIR}/lib/libmpv.dylib")
+    elseif(WIN32)
+        set(MPV_LIBRARY "${EXTERNAL_MPV_DIR}/lib/mpv.lib")
     else()
         set(MPV_LIBRARY "${EXTERNAL_MPV_DIR}/lib/libmpv.so")
     endif()
@@ -156,6 +178,8 @@ else()
 
     if(APPLE)
         set(MPV_LIBRARY "${MPV_BUILD_DIR}/libmpv.dylib")
+    elseif(WIN32)
+        set(MPV_LIBRARY "${MPV_BUILD_DIR}/mpv.lib")
     else()
         set(MPV_LIBRARY "${MPV_BUILD_DIR}/libmpv.so")
     endif()
@@ -223,15 +247,21 @@ add_custom_command(
 )
 add_custom_target(embedded_resources DEPENDS ${EMBEDDED_RESOURCES_HEADER})
 
-add_executable(jellyfin-desktop-cef
+# Common sources for all platforms
+set(COMMON_SOURCES
     src/main.cpp
     src/cef/cef_app.cpp
     src/cef/cef_client.cpp
     src/cef/resource_handler.cpp
     src/context/vulkan_context.cpp
+    src/player/mpv/mpv_player_gl.cpp
     src/player/mpv/mpv_player_vk.cpp
     src/settings.cpp
     src/ui/menu_overlay.cpp
+)
+
+add_executable(jellyfin-desktop-cef
+    ${COMMON_SOURCES}
     ${PLATFORM_SOURCES}
 )
 
@@ -343,6 +373,12 @@ if(NOT EXTERNAL_MPV_DIR)
             COMMAND install_name_tool -change "@rpath/libmpv.2.dylib"
                 "@executable_path/libmpv.2.dylib" "$<TARGET_FILE:jellyfin-desktop-cef>"
         )
+    elseif(WIN32)
+        add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy
+                "${MPV_BUILD_DIR}/libmpv-2.dll"
+                "$<TARGET_FILE_DIR:jellyfin-desktop-cef>/libmpv-2.dll"
+        )
     else()
         add_custom_command(TARGET jellyfin-desktop-cef POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy
@@ -352,8 +388,33 @@ if(NOT EXTERNAL_MPV_DIR)
     endif()
 endif()
 
-# macOS app bundle installation
-if(APPLE)
+# Install rules
+install(TARGETS jellyfin-desktop-cef RUNTIME DESTINATION .)
+
+if(WIN32)
+    # CEF binaries and resources
+    install(DIRECTORY "${CEF_RELEASE_DIR}/" DESTINATION .
+        FILES_MATCHING PATTERN "*.dll" PATTERN "*.bin" PATTERN "*.json")
+    install(DIRECTORY "${CEF_RESOURCE_DIR}/" DESTINATION .
+        FILES_MATCHING PATTERN "*.pak" PATTERN "*.dat")
+    install(DIRECTORY "${CEF_RESOURCE_DIR}/locales" DESTINATION .)
+
+    # SDL3
+    install(FILES "${CMAKE_SOURCE_DIR}/third_party/SDL/lib/x64/SDL3.dll" DESTINATION .)
+
+    # libmpv
+    if(EXTERNAL_MPV_DIR)
+        install(FILES "${EXTERNAL_MPV_DIR}/lib/libmpv-2.dll" DESTINATION .)
+    endif()
+
+    # MSYS2 DLLs for mpv dependencies (optional - set MSYS2_BIN_DIR)
+    set(MSYS2_BIN_DIR "" CACHE PATH "Path to MSYS2 bin directory for mpv DLL dependencies (e.g. C:/msys64/clang64/bin)")
+    if(MSYS2_BIN_DIR AND EXISTS "${MSYS2_BIN_DIR}")
+        file(GLOB MSYS2_DLLS "${MSYS2_BIN_DIR}/*.dll")
+        install(FILES ${MSYS2_DLLS} DESTINATION .)
+    endif()
+elseif(APPLE)
+    # macOS app bundle installation
     set(APP_NAME "Jellyfin Desktop CEF.app")
     set(BUNDLE_CONTENTS "${CMAKE_INSTALL_PREFIX}/${APP_NAME}/Contents")
 
@@ -407,4 +468,27 @@ if(APPLE)
 
     # Run bundle completion (fixes library paths)
     install(SCRIPT "${CMAKE_BINARY_DIR}/CompleteBundleMac.cmake")
+else()
+    # Linux: CEF resources and libraries
+    install(DIRECTORY "${CEF_RELEASE_DIR}/" DESTINATION .
+        FILES_MATCHING PATTERN "*.so*" PATTERN "*.bin")
+    install(DIRECTORY "${CEF_RESOURCE_DIR}/" DESTINATION .
+        FILES_MATCHING PATTERN "*.pak" PATTERN "*.dat")
+    install(DIRECTORY "${CEF_RESOURCE_DIR}/locales" DESTINATION .)
+    if(EXTERNAL_MPV_DIR)
+        install(FILES "${EXTERNAL_MPV_DIR}/lib/libmpv.so" DESTINATION .)
+    endif()
 endif()
+
+# CPack for creating distribution packages
+set(CPACK_PACKAGE_NAME "jellyfin-desktop-cef")
+set(CPACK_PACKAGE_VENDOR "Jellyfin")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Jellyfin Desktop Client")
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+elseif(APPLE)
+    set(CPACK_GENERATOR "ZIP")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+include(CPack)

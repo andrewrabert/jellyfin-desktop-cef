@@ -5,6 +5,11 @@
 #include <OpenGL/gl3.h>
 #include <IOSurface/IOSurface.h>
 typedef CGLContext GLContext;
+#elif defined(_WIN32)
+#include "context/wgl_context.h"
+#include <GL/gl.h>
+#include <GL/glext.h>
+typedef WGLContext GLContext;
 #else
 #include "context/egl_context.h"
 #include <libdrm/drm_fourcc.h>
@@ -44,6 +49,8 @@ public:
 
     // Check if there's a pending IOSurface to import
     bool hasPendingIOSurface() const { return iosurface_queued_; }
+#elif defined(_WIN32)
+    // Windows: Software path only for now (no GPU texture sharing)
 #else
     // Queue DMA-BUF for import (thread-safe, call from any thread)
     void queueDmaBuf(const AcceleratedPaintInfo& info);
@@ -96,6 +103,8 @@ private:
     int pending_iosurface_height_ = 0;
     bool iosurface_queued_ = false;
     GLuint texture_rect_ = 0;  // GL_TEXTURE_RECTANGLE for IOSurface
+#elif defined(_WIN32)
+    // Windows: Software path only (no GPU texture sharing yet)
 #else
     // DMA-BUF support (Linux, triple buffered)
     bool dmabuf_supported_ = true;

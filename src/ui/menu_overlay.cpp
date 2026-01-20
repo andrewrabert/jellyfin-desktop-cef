@@ -163,10 +163,10 @@ void MenuOverlay::render() {
             stbtt_GetCodepointHMetrics(info, c, &advance, &lsb);
             w += static_cast<int>(advance * font_scale_);
         }
-        max_text_width = std::max(max_text_width, w);
+        max_text_width = (std::max)(max_text_width, w);
     }
 
-    tex_width_ = std::max(MIN_WIDTH, max_text_width + PADDING_X * 2);
+    tex_width_ = (std::max)(MIN_WIDTH, max_text_width + PADDING_X * 2);
     tex_height_ = static_cast<int>(items_.size()) * ITEM_HEIGHT;
 
     pixels_.resize(tex_width_ * tex_height_ * 4);
@@ -236,7 +236,7 @@ void MenuOverlay::render() {
                             pixels_[i + 0] = (r * alpha + pixels_[i + 0] * inv) / 255;
                             pixels_[i + 1] = (g * alpha + pixels_[i + 1] * inv) / 255;
                             pixels_[i + 2] = (b * alpha + pixels_[i + 2] * inv) / 255;
-                            pixels_[i + 3] = std::max(pixels_[i + 3], alpha);
+                            pixels_[i + 3] = (std::max)(pixels_[i + 3], alpha);
                         }
                     }
                 }

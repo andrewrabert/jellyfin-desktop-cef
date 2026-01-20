@@ -1,0 +1,98 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+env:
+  MPV_VERSION: "20251214-git-f7be2ee"
+  SDL_VERSION: "3.2.14"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ -f VERSION ]; then
+            VERSION=$(cat VERSION)
+          else
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+      - name: Cache CEF
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/cef
+            third_party/cef_binary_*
+          key: cef-windows-x64-${{ hashFiles('dev/download_cef.py') }}
+          restore-keys: |
+            cef-windows-x64-
+
+      - name: Download CEF
+        run: |
+          python dev/download_cef.py
+
+      - name: Download SDL3
+        shell: bash
+        run: |
+          curl -L "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL3-devel-${SDL_VERSION}-VC.zip" -o sdl3.zip
+          7z x sdl3.zip -othird_party
+          mv "third_party/SDL3-${SDL_VERSION}" third_party/SDL
+
+      - name: Download libmpv
+        shell: bash
+        run: |
+          mkdir -p third_party/mpv/lib
+          curl -L "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-x86_64-v3-${MPV_VERSION}.7z/download" -o mpv.7z
+          7z x mpv.7z -ompv-tmp
+          mv mpv-tmp/include third_party/mpv/
+          mv mpv-tmp/libmpv-2.dll third_party/mpv/lib/
+          mv mpv-tmp/libmpv-2.def third_party/mpv/lib/ || true
+          mv mpv-tmp/libmpv.dll.a third_party/mpv/lib/ || true
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Generate mpv import library
+        shell: cmd
+        run: |
+          cd third_party\mpv\lib
+          lib /def:libmpv-2.def /out:libmpv-2.lib /MACHINE:X64
+
+      - name: Configure and build
+        shell: cmd
+        run: |
+          cmake -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+            -DSDL3_DIR=%CD%\third_party\SDL\cmake ^
+            -DEXTERNAL_MPV_DIR=%CD%\third_party\mpv
+          cmake --build build
+
+      - name: Create package
+        shell: cmd
+        run: |
+          cmake --install build --prefix build/install
+          cd build
+          cpack -G ZIP
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: build/jellyfin-desktop-cef-*.zip
