@@ -30,6 +30,7 @@ void activateMacWindow(SDL_Window* window);
 #include "compositor/metal_compositor.h"
 #include "player/media_session.h"
 #include "player/macos/media_session_macos.h"
+#include "PFMoveApplication.h"
 #else
 #include "context/egl_context.h"
 #include "platform/wayland_subsurface.h"
@@ -290,6 +291,11 @@ int main(int argc, char* argv[]) {
     if (exit_code >= 0) {
         return exit_code;
     }
+
+#if defined(__APPLE__) && defined(NDEBUG)
+    // In release builds, offer to move app to /Applications (clears quarantine)
+    PFMoveToApplicationsFolderIfNecessary();
+#endif
 
     // SDL initialization with OpenGL (for main surface CEF overlay)
     if (!SDL_Init(SDL_INIT_VIDEO)) {

@@ -53,12 +53,18 @@ if(APPLE)
         src/player/media_session.cpp
         src/player/macos/media_session_macos.mm
     )
+
+    # LetsMove - prompts user to move app to /Applications (clears quarantine)
+    add_subdirectory(external/letsmove)
+    set(PLATFORM_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/external/letsmove)
+
     set(PLATFORM_LIBRARIES
         ${COCOA_FRAMEWORK}
         ${METAL_FRAMEWORK}
         ${QUARTZCORE_FRAMEWORK}
         ${IOSURFACE_FRAMEWORK}
         ${MEDIAPLAYER_FRAMEWORK}
+        letsmove
     )
 else()
     # Linux: OpenGL/EGL, Wayland
