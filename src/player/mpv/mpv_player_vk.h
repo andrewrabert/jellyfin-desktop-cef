@@ -8,8 +8,8 @@ using VideoSurface = MacOSVideoLayer;
 #include "platform/windows_video_layer.h"
 using VideoSurface = WindowsVideoLayer;
 #else
-#include "platform/wayland_subsurface.h"
-using VideoSurface = WaylandSubsurface;
+#include "platform/video_surface.h"
+// VideoSurface is now an abstract base class on Linux
 #endif
 #include <string>
 #include <functional>

@@ -46,6 +46,7 @@ void activateMacWindow(SDL_Window* window);
 #include "player/mpris/media_session_mpris.h"
 #include "compositor/opengl_compositor.h"
 #include "player/mpv/mpv_player_vk.h"
+#include "player/mpv/mpv_player_gl.h"
 #endif
 #include "cef/cef_app.h"
 #include "cef/cef_client.h"
@@ -441,32 +442,83 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Initialize Wayland subsurface for HDR video (uses its own Vulkan)
-    WaylandSubsurface subsurface;
-    if (!subsurface.init(window, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                         nullptr, 0, nullptr)) {
-        std::cerr << "Fatal: Wayland subsurface init failed" << std::endl;
-        return 1;
-    }
-    if (!subsurface.createSwapchain(width, height)) {
-        std::cerr << "Fatal: Wayland subsurface swapchain failed" << std::endl;
-        return 1;
-    }
-    bool has_subsurface = true;
-    std::cerr << "Using Wayland subsurface for video (HDR: "
-              << (subsurface.isHdr() ? "yes" : "no") << ")" << std::endl;
+    // Detect Wayland vs X11 at runtime
+    const char* videoDriver = SDL_GetCurrentVideoDriver();
+    bool useWayland = videoDriver && strcmp(videoDriver, "wayland") == 0;
+    std::cerr << "SDL video driver: " << (videoDriver ? videoDriver : "null")
+              << " -> using " << (useWayland ? "Wayland" : "X11") << std::endl;
 
-    // Initialize mpv player (using subsurface's Vulkan context)
-    MpvPlayerVk mpv;
-    bool has_video = false;
-    bool video_needs_rerender = false;  // Force render after resize (for paused video)
-    double current_playback_rate = 1.0;
-    if (!mpv.init(nullptr, &subsurface)) {
-        std::cerr << "MpvPlayerVk init failed" << std::endl;
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
+    // Video layer (Wayland subsurface only - X11 uses OpenGL composition)
+    WaylandSubsurface waylandSubsurface;
+    bool has_subsurface = false;
+    bool is_hdr = false;
+
+    if (useWayland) {
+        if (!waylandSubsurface.init(window, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                                     nullptr, 0, nullptr)) {
+            std::cerr << "Fatal: Wayland subsurface init failed" << std::endl;
+            return 1;
+        }
+        if (!waylandSubsurface.createSwapchain(width, height)) {
+            std::cerr << "Fatal: Wayland subsurface swapchain failed" << std::endl;
+            return 1;
+        }
+        has_subsurface = true;
+        is_hdr = waylandSubsurface.isHdr();
+        std::cerr << "Using Wayland subsurface for video (HDR: "
+                  << (is_hdr ? "yes" : "no") << ")" << std::endl;
+    } else {
+        // X11: No separate video layer - use OpenGL composition like Windows
+        has_subsurface = false;
+        is_hdr = false;
+        std::cerr << "Using OpenGL composition for video (X11, no HDR)" << std::endl;
     }
+
+    // Initialize mpv player
+    // Wayland: MpvPlayerVk with subsurface for HDR support
+    // X11: MpvPlayerGL with OpenGL composition (gpu-next backend)
+    MpvPlayerVk mpvVk;
+    MpvPlayerGL mpvGl;
+    bool has_video = false;
+    bool video_needs_rerender = false;
+    double current_playback_rate = 1.0;
+
+    if (useWayland) {
+        if (!mpvVk.init(nullptr, &waylandSubsurface)) {
+            std::cerr << "MpvPlayerVk init failed" << std::endl;
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 1;
+        }
+    } else {
+        if (!mpvGl.init(&egl)) {
+            std::cerr << "MpvPlayerGL init failed" << std::endl;
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 1;
+        }
+    }
+
+    // Player dispatch helpers - route to correct player based on display server
+    auto mpvLoadFile = [&](const std::string& path, double startSec = 0.0) {
+        return useWayland ? mpvVk.loadFile(path, startSec) : mpvGl.loadFile(path, startSec);
+    };
+    auto mpvStop = [&]() { useWayland ? mpvVk.stop() : mpvGl.stop(); };
+    auto mpvPause = [&]() { useWayland ? mpvVk.pause() : mpvGl.pause(); };
+    auto mpvPlay = [&]() { useWayland ? mpvVk.play() : mpvGl.play(); };
+    auto mpvSeek = [&](double sec) { useWayland ? mpvVk.seek(sec) : mpvGl.seek(sec); };
+    auto mpvSetVolume = [&](int vol) { useWayland ? mpvVk.setVolume(vol) : mpvGl.setVolume(vol); };
+    auto mpvSetMuted = [&](bool m) { useWayland ? mpvVk.setMuted(m) : mpvGl.setMuted(m); };
+    auto mpvSetSpeed = [&](double s) { useWayland ? mpvVk.setSpeed(s) : mpvGl.setSpeed(s); };
+    auto mpvSetNormalizationGain = [&](double g) { useWayland ? mpvVk.setNormalizationGain(g) : mpvGl.setNormalizationGain(g); };
+    auto mpvSetSubtitleTrack = [&](int sid) { useWayland ? mpvVk.setSubtitleTrack(sid) : mpvGl.setSubtitleTrack(sid); };
+    auto mpvSetAudioTrack = [&](int aid) { useWayland ? mpvVk.setAudioTrack(aid) : mpvGl.setAudioTrack(aid); };
+    auto mpvSetAudioDelay = [&](double d) { useWayland ? mpvVk.setAudioDelay(d) : mpvGl.setAudioDelay(d); };
+    auto mpvIsPaused = [&]() { return useWayland ? mpvVk.isPaused() : mpvGl.isPaused(); };
+    auto mpvIsPlaying = [&]() { return useWayland ? mpvVk.isPlaying() : mpvGl.isPlaying(); };
+    auto mpvHasFrame = [&]() { return useWayland ? mpvVk.hasFrame() : mpvGl.hasFrame(); };
+    auto mpvProcessEvents = [&]() { useWayland ? mpvVk.processEvents() : mpvGl.processEvents(); };
+    auto mpvCleanup = [&]() { useWayland ? mpvVk.cleanup() : mpvGl.cleanup(); };
 
     // Initialize OpenGL compositor for CEF overlay
     float initial_scale = SDL_GetWindowDisplayScale(window);
@@ -486,7 +538,7 @@ int main(int argc, char* argv[]) {
 
     // Second compositor for overlay browser
     OpenGLCompositor overlay_compositor;
-    if (!overlay_compositor.init(&egl, physical_width, physical_height, false)) {  // Always software for overlay
+    if (!overlay_compositor.init(&egl, physical_width, physical_height, false)) {
         std::cerr << "Overlay compositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -841,8 +893,9 @@ int main(int argc, char* argv[]) {
     // Window state notifications
     WindowStateNotifier window_state;
     window_state.add(active_browser);
-    MpvLayer mpv_layer(&mpv);
-    window_state.add(&mpv_layer);
+    MpvLayerVk mpv_layer_vk(&mpvVk);
+    MpvLayerGL mpv_layer_gl(&mpvGl);
+    window_state.add(useWayland ? static_cast<WindowStateListener*>(&mpv_layer_vk) : static_cast<WindowStateListener*>(&mpv_layer_gl));
 
     auto last_activity = Clock::now();
     float overlay_alpha = 1.0f;
@@ -859,26 +912,19 @@ int main(int argc, char* argv[]) {
 #endif
 
     // Set up mpv event callbacks (event-driven like jellyfin-desktop)
-    mpv.setPositionCallback([&](double ms) {
+    // Callbacks for position updates
+    auto positionCb = [&](double ms) {
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-    });
-    mpv.setDurationCallback([&](double ms) {
+    };
+    auto durationCb = [&](double ms) {
         client->updateDuration(ms);
-    });
-    mpv.setPlayingCallback([&]() {
-        // FILE_LOADED - initial playback start
-        // NOTE: Don't call mpv_get_property from inside event callback - can deadlock
+    };
+    auto playingCb = [&]() {
         client->emitPlaying();
-        // Position will be updated via property observation
         mediaSession.setPlaybackState(PlaybackState::Playing);
-    });
-    mpv.setStateCallback([&](bool paused) {
-        // Ignore initial property emission before any file is loaded
-        if (!mpv.isPlaying()) return;
-
-        // pause property changed - pause/resume
-        // NOTE: Don't call mpv_get_property from inside event callback - can deadlock
-        // Position will be updated via property observation
+    };
+    auto stateCb = [&](bool paused) {
+        if (!mpvIsPlaying()) return;
         if (paused) {
             client->emitPaused();
             mediaSession.setPlaybackState(PlaybackState::Paused);
@@ -886,45 +932,44 @@ int main(int argc, char* argv[]) {
             client->emitPlaying();
             mediaSession.setPlaybackState(PlaybackState::Playing);
         }
-    });
-    mpv.setFinishedCallback([&]() {
+    };
+    auto finishedCb = [&]() {
         std::cerr << "[MAIN] Track finished naturally (EOF), emitting finished signal" << std::endl;
         has_video = false;
 #if !defined(__APPLE__) && !defined(_WIN32)
         if (has_subsurface) {
-            subsurface.setVisible(false);
+            waylandSubsurface.setVisible(false);
         }
 #endif
         client->emitFinished();
         mediaSession.setPlaybackState(PlaybackState::Stopped);
-    });
-    mpv.setCanceledCallback([&]() {
+    };
+    auto canceledCb = [&]() {
         std::cerr << "[MAIN] Track canceled (user stop), emitting canceled signal" << std::endl;
         has_video = false;
 #if !defined(__APPLE__) && !defined(_WIN32)
         if (has_subsurface) {
-            subsurface.setVisible(false);
+            waylandSubsurface.setVisible(false);
         }
 #endif
         client->emitCanceled();
         mediaSession.setPlaybackState(PlaybackState::Stopped);
-    });
-    mpv.setSeekedCallback([&](double ms) {
+    };
+    auto seekedCb = [&](double ms) {
         client->updatePosition(ms);
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
         mediaSession.setRate(current_playback_rate);
         mediaSession.emitSeeked(static_cast<int64_t>(ms * 1000.0));
-    });
-    mpv.setBufferingCallback([&](bool buffering, double ms) {
+    };
+    auto bufferingCb = [&](bool buffering, double ms) {
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
         if (buffering) {
             mediaSession.setRate(0.0);
         } else {
             mediaSession.setRate(current_playback_rate);
         }
-    });
-    mpv.setBufferedRangesCallback([&](const auto& ranges) {
-        // Send buffered ranges to JS as JSON array
+    };
+    auto bufferedRangesCb = [&](const std::vector<MpvPlayerVk::BufferedRange>& ranges) {
         std::string json = "[";
         for (size_t i = 0; i < ranges.size(); i++) {
             if (i > 0) json += ",";
@@ -933,27 +978,64 @@ int main(int argc, char* argv[]) {
         }
         json += "]";
         client->executeJS("if(window._nativeUpdateBufferedRanges)window._nativeUpdateBufferedRanges(" + json + ");");
-    });
-    mpv.setCoreIdleCallback([&](bool idle, double ms) {
+    };
+    auto coreIdleCb = [&](bool idle, double ms) {
         (void)idle;
         mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-    });
-    mpv.setErrorCallback([&](const std::string& error) {
+    };
+    auto errorCb = [&](const std::string& error) {
         std::cerr << "[MAIN] Playback error: " << error << std::endl;
         has_video = false;
 #if !defined(__APPLE__) && !defined(_WIN32)
         if (has_subsurface) {
-            subsurface.setVisible(false);
+            waylandSubsurface.setVisible(false);
         }
 #endif
         client->emitError(error);
         mediaSession.setPlaybackState(PlaybackState::Stopped);
-    });
+    };
+
+    // Set callbacks on the active player
+    if (useWayland) {
+        mpvVk.setPositionCallback(positionCb);
+        mpvVk.setDurationCallback(durationCb);
+        mpvVk.setPlayingCallback(playingCb);
+        mpvVk.setStateCallback(stateCb);
+        mpvVk.setFinishedCallback(finishedCb);
+        mpvVk.setCanceledCallback(canceledCb);
+        mpvVk.setSeekedCallback(seekedCb);
+        mpvVk.setBufferingCallback(bufferingCb);
+        mpvVk.setBufferedRangesCallback(bufferedRangesCb);
+        mpvVk.setCoreIdleCallback(coreIdleCb);
+        mpvVk.setErrorCallback(errorCb);
+    } else {
+        mpvGl.setPositionCallback(positionCb);
+        mpvGl.setDurationCallback(durationCb);
+        mpvGl.setPlayingCallback(playingCb);
+        mpvGl.setStateCallback(stateCb);
+        mpvGl.setFinishedCallback(finishedCb);
+        mpvGl.setCanceledCallback(canceledCb);
+        mpvGl.setSeekedCallback(seekedCb);
+        mpvGl.setBufferingCallback(bufferingCb);
+        // MpvPlayerGL uses same BufferedRange struct
+        mpvGl.setBufferedRangesCallback([&](const std::vector<MpvPlayerGL::BufferedRange>& ranges) {
+            std::string json = "[";
+            for (size_t i = 0; i < ranges.size(); i++) {
+                if (i > 0) json += ",";
+                json += "{\"start\":" + std::to_string(ranges[i].start) +
+                        ",\"end\":" + std::to_string(ranges[i].end) + "}";
+            }
+            json += "]";
+            client->executeJS("if(window._nativeUpdateBufferedRanges)window._nativeUpdateBufferedRanges(" + json + ");");
+        });
+        mpvGl.setCoreIdleCallback(coreIdleCb);
+        mpvGl.setErrorCallback(errorCb);
+    }
 
     // Auto-load test video if provided via --video
     if (!test_video.empty()) {
         std::cerr << "[TEST] Loading video: " << test_video << std::endl;
-        if (mpv.loadFile(test_video)) {
+        if (mpvLoadFile(test_video)) {
             has_video = true;
 #ifdef __APPLE__
             if (has_subsurface && videoLayer.isHdr()) {
@@ -962,8 +1044,8 @@ int main(int argc, char* argv[]) {
 #elif defined(_WIN32)
             // Windows HDR is automatic via DXGI colorspace
 #else
-            if (has_subsurface && subsurface.isHdr()) {
-                subsurface.setColorspace();
+            if (has_subsurface && is_hdr && useWayland) {
+                waylandSubsurface.setColorspace();
             }
 #endif
             client->emitPlaying();
@@ -980,7 +1062,7 @@ int main(int argc, char* argv[]) {
         bool activity_this_frame = false;
 
         // Process mpv events (event-driven position/state updates)
-        mpv.processEvents();
+        mpvProcessEvents();
 
         if (!focus_set) {
             window_state.notifyFocusGained();
@@ -1116,12 +1198,12 @@ int main(int argc, char* argv[]) {
                 client->resize(current_width, current_height);
                 overlay_client->resize(current_width, current_height);
 
-                // Resize subsurface for video
+                // Resize video layer (Wayland only - X11 uses OpenGL composition)
                 if (has_subsurface) {
-                    vkDeviceWaitIdle(subsurface.vkDevice());
-                    subsurface.recreateSwapchain(current_width, current_height);
-                    video_needs_rerender = true;  // Force render even when paused
+                    vkDeviceWaitIdle(waylandSubsurface.vkDevice());
+                    waylandSubsurface.recreateSwapchain(current_width, current_height);
                 }
+                video_needs_rerender = true;  // Force render even when paused
 #endif
 
                 auto resize_end = std::chrono::steady_clock::now();
@@ -1197,11 +1279,11 @@ int main(int argc, char* argv[]) {
                         // Apply normalization gain (ReplayGain) if present
                         bool hasGain = false;
                         double normGain = jsonGetDouble(cmd.metadata, "NormalizationGain", &hasGain);
-                        mpv.setNormalizationGain(hasGain ? normGain : 0.0);
+                        mpvSetNormalizationGain(hasGain ? normGain : 0.0);
                     } else {
-                        mpv.setNormalizationGain(0.0);  // Clear any previous gain
+                        mpvSetNormalizationGain(0.0);  // Clear any previous gain
                     }
-                    if (mpv.loadFile(cmd.url, startSec)) {
+                    if (mpvLoadFile(cmd.url, startSec)) {
                         has_video = true;
 #ifdef __APPLE__
                         if (has_subsurface && videoLayer.isHdr()) {
@@ -1210,65 +1292,65 @@ int main(int argc, char* argv[]) {
 #elif defined(_WIN32)
                         // Windows HDR is automatic via DXGI colorspace
 #else
-                        if (has_subsurface && subsurface.isHdr()) {
-                            subsurface.setColorspace();
+                        if (has_subsurface && is_hdr && useWayland) {
+                            waylandSubsurface.setColorspace();
                         }
 #endif
                         // Apply initial subtitle track if specified
                         int subIdx = jsonGetIntDefault(cmd.metadata, "_subIdx", -1);
                         if (subIdx >= 0) {
-                            mpv.setSubtitleTrack(subIdx);
+                            mpvSetSubtitleTrack(subIdx);
                         }
                         // Apply initial audio track if specified
                         int audioIdx = jsonGetIntDefault(cmd.metadata, "_audioIdx", -1);
                         if (audioIdx >= 0) {
-                            mpv.setAudioTrack(audioIdx);
+                            mpvSetAudioTrack(audioIdx);
                         }
                         // mpv events will trigger state callbacks
                     } else {
                         client->emitError("Failed to load video");
                     }
                 } else if (cmd.cmd == "stop") {
-                    mpv.stop();
+                    mpvStop();
                     has_video = false;
                     video_ready = false;
 #if !defined(__APPLE__) && !defined(_WIN32)
                     if (has_subsurface) {
-                        subsurface.setVisible(false);
+                        waylandSubsurface.setVisible(false);
                     }
 #endif
                     // mpv END_FILE event will trigger finished callback
                 } else if (cmd.cmd == "pause") {
-                    mpv.pause();
+                    mpvPause();
                     // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "play") {
-                    mpv.play();
+                    mpvPlay();
                     // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "playpause") {
-                    if (mpv.isPaused()) {
-                        mpv.play();
+                    if (mpvIsPaused()) {
+                        mpvPlay();
                     } else {
-                        mpv.pause();
+                        mpvPause();
                     }
                     // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "seek") {
-                    mpv.seek(static_cast<double>(cmd.intArg) / 1000.0);
+                    mpvSeek(static_cast<double>(cmd.intArg) / 1000.0);
                 } else if (cmd.cmd == "volume") {
-                    mpv.setVolume(cmd.intArg);
+                    mpvSetVolume(cmd.intArg);
                 } else if (cmd.cmd == "mute") {
-                    mpv.setMuted(cmd.intArg != 0);
+                    mpvSetMuted(cmd.intArg != 0);
                 } else if (cmd.cmd == "speed") {
                     double speed = cmd.intArg / 1000.0;
-                    mpv.setSpeed(speed);
+                    mpvSetSpeed(speed);
                 } else if (cmd.cmd == "subtitle") {
-                    mpv.setSubtitleTrack(cmd.intArg);
+                    mpvSetSubtitleTrack(cmd.intArg);
                 } else if (cmd.cmd == "audio") {
-                    mpv.setAudioTrack(cmd.intArg);
+                    mpvSetAudioTrack(cmd.intArg);
                 } else if (cmd.cmd == "audioDelay") {
                     if (!cmd.metadata.empty()) {
                         try {
                             double delay = std::stod(cmd.metadata);
-                            mpv.setAudioDelay(delay);
+                            mpvSetAudioDelay(delay);
                         } catch (...) {
                             std::cerr << "[MAIN] Invalid audioDelay value: " << cmd.metadata << std::endl;
                         }
@@ -1448,38 +1530,56 @@ int main(int argc, char* argv[]) {
 
         wgl.swapBuffers();
 #else
-        if (has_subsurface && ((has_video && mpv.hasFrame()) || video_needs_rerender)) {
-            VkImage sub_image;
-            VkImageView sub_view;
-            VkFormat sub_format;
-            if (subsurface.startFrame(&sub_image, &sub_view, &sub_format)) {
-                mpv.render(sub_image, sub_view,
-                          subsurface.width(), subsurface.height(),
-                          sub_format);
-                subsurface.submitFrame();
-                video_ready = true;
-                video_needs_rerender = false;
-            }
-        }
-
-        // Import queued DMA-BUF if any (GPU path)
-        compositor.importQueuedDmaBuf();
-
-        flushPaintBuffer();
-
-        // Flush pending overlay data to GPU texture (software path)
-        compositor.flushOverlay();
-
+        // Linux: Different rendering paths for Wayland vs X11
         // Get physical dimensions for viewport (HiDPI)
         float frame_scale = SDL_GetWindowDisplayScale(window);
         int viewport_w = static_cast<int>(current_width * frame_scale);
         int viewport_h = static_cast<int>(current_height * frame_scale);
 
-        // Clear main surface (transparent when video ready, black otherwise)
-        glViewport(0, 0, viewport_w, viewport_h);
-        float bg_alpha = video_ready ? 0.0f : 1.0f;
-        glClearColor(0.0f, 0.0f, 0.0f, bg_alpha);
-        glClear(GL_COLOR_BUFFER_BIT);
+        if (useWayland) {
+            // Wayland: Render video to separate Vulkan subsurface
+            if (has_subsurface && ((has_video && mpvVk.hasFrame()) || video_needs_rerender)) {
+                VkImage sub_image;
+                VkImageView sub_view;
+                VkFormat sub_format;
+                if (waylandSubsurface.startFrame(&sub_image, &sub_view, &sub_format)) {
+                    mpvVk.render(sub_image, sub_view,
+                                waylandSubsurface.width(), waylandSubsurface.height(),
+                                sub_format);
+                    waylandSubsurface.submitFrame();
+                    video_ready = true;
+                    video_needs_rerender = false;
+                }
+            }
+
+            // Import queued DMA-BUF if any (GPU path)
+            compositor.importQueuedDmaBuf();
+
+            flushPaintBuffer();
+            compositor.flushOverlay();
+
+            // Clear main surface (transparent when video ready, black otherwise)
+            glViewport(0, 0, viewport_w, viewport_h);
+            float bg_alpha = video_ready ? 0.0f : 1.0f;
+            glClearColor(0.0f, 0.0f, 0.0f, bg_alpha);
+            glClear(GL_COLOR_BUFFER_BIT);
+        } else {
+            // X11: OpenGL composition (like Windows) - render video and CEF to same surface
+            flushPaintBuffer();
+            compositor.flushOverlay();
+
+            // Clear to black
+            glViewport(0, 0, viewport_w, viewport_h);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            // Render video first (underneath the browser UI)
+            if (has_video && (mpvGl.hasFrame() || video_needs_rerender)) {
+                mpvGl.render(viewport_w, viewport_h, 0);
+                video_ready = true;
+                video_needs_rerender = false;
+            }
+        }
 
         // Composite main browser (always full opacity when no video)
         if (test_video.empty() && compositor.hasValidOverlay()) {
@@ -1501,7 +1601,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup
-    mpv.cleanup();
+    mpvCleanup();
     compositor.cleanup();
     overlay_compositor.cleanup();
 #ifdef __APPLE__
@@ -1512,7 +1612,7 @@ int main(int argc, char* argv[]) {
     wgl.cleanup();
 #else
     if (has_subsurface) {
-        subsurface.cleanup();
+        waylandSubsurface.cleanup();
     }
     egl.cleanup();
 #endif

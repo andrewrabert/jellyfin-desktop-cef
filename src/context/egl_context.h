@@ -42,9 +42,10 @@ private:
     EGLSurface surface_ = EGL_NO_SURFACE;
     EGLContext context_ = EGL_NO_CONTEXT;
     EGLConfig config_ = nullptr;
-    struct wl_egl_window* egl_window_ = nullptr;
+    struct wl_egl_window* egl_window_ = nullptr;  // Only used for Wayland
 
     int width_ = 0;
     int height_ = 0;
     bool has_dmabuf_import_ = false;
+    bool is_wayland_ = false;
 };

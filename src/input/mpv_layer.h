@@ -1,18 +1,15 @@
 #pragma once
 
 #include "window_state.h"
-#ifdef _WIN32
 #include "../player/mpv/mpv_player_gl.h"
-using MpvPlayer = MpvPlayerGL;
-#else
 #include "../player/mpv/mpv_player_vk.h"
-using MpvPlayer = MpvPlayerVk;
-#endif
 
 // Window state listener for mpv - pauses on minimize, resumes on restore
-class MpvLayer : public WindowStateListener {
+// Template to support both MpvPlayerGL and MpvPlayerVk
+template<typename MpvPlayer>
+class MpvLayerT : public WindowStateListener {
 public:
-    explicit MpvLayer(MpvPlayer* mpv) : mpv_(mpv) {}
+    explicit MpvLayerT(MpvPlayer* mpv) : mpv_(mpv) {}
 
     void onMinimized() override {
         if (!mpv_) return;
@@ -34,3 +31,17 @@ private:
     MpvPlayer* mpv_ = nullptr;
     bool was_playing_ = false;
 };
+
+// Type aliases for convenience
+using MpvLayerGL = MpvLayerT<MpvPlayerGL>;
+using MpvLayerVk = MpvLayerT<MpvPlayerVk>;
+
+// Default MpvLayer for backward compatibility
+#ifdef _WIN32
+using MpvLayer = MpvLayerGL;
+#elif defined(__APPLE__)
+using MpvLayer = MpvLayerVk;
+#else
+// Linux: Both types available, choose based on display server
+using MpvLayer = MpvLayerVk;  // Default
+#endif

@@ -87,7 +87,7 @@ elseif(WIN32)
     )
     set(PLATFORM_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/third_party")
 else()
-    # Linux: OpenGL/EGL, Wayland
+    # Linux: OpenGL/EGL, Wayland, X11
     find_package(OpenGL REQUIRED COMPONENTS EGL OpenGL)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
@@ -95,6 +95,7 @@ else()
     pkg_check_modules(WAYLAND REQUIRED wayland-client)
     pkg_check_modules(WAYLAND_PROTOCOLS REQUIRED wayland-protocols)
     pkg_check_modules(SYSTEMD REQUIRED libsystemd)
+    pkg_check_modules(X11 REQUIRED x11)
 
     # Find wayland-scanner
     find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -124,6 +125,7 @@ else()
     set(PLATFORM_SOURCES
         src/context/egl_context.cpp
         src/platform/wayland_subsurface.cpp
+        src/platform/x11_video_layer.cpp
         src/compositor/opengl_compositor.cpp
         src/player/media_session.cpp
         src/player/mpris/media_session_mpris.cpp
@@ -134,6 +136,7 @@ else()
         ${WAYLAND_LIBRARIES}
         ${WAYLAND_EGL_LIBRARIES}
         ${SYSTEMD_LIBRARIES}
+        ${X11_LIBRARIES}
         OpenGL::EGL
         OpenGL::OpenGL
     )
@@ -142,6 +145,7 @@ else()
         ${WAYLAND_EGL_INCLUDE_DIRS}
         ${LIBDRM_INCLUDE_DIRS}
         ${SYSTEMD_INCLUDE_DIRS}
+        ${X11_INCLUDE_DIRS}
         ${CMAKE_BINARY_DIR}
     )
 endif()

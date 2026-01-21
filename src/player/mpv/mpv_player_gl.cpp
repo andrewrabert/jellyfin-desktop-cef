@@ -213,8 +213,12 @@ bool MpvPlayerGL::init(GLContext* gl) {
 
     int advanced_control = 1;
 
+    // Use gpu-next (libplacebo) backend for all platforms
+    const char* backend = "gpu-next";
+
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL)},
+        {MPV_RENDER_PARAM_BACKEND, const_cast<char*>(backend)},
         {MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init},
         {MPV_RENDER_PARAM_ADVANCED_CONTROL, &advanced_control},
         {MPV_RENDER_PARAM_INVALID, nullptr}
@@ -222,13 +226,12 @@ bool MpvPlayerGL::init(GLContext* gl) {
 
     int result = mpv_render_context_create(&render_ctx_, mpv_, params);
     if (result < 0) {
-        std::cerr << "mpv_render_context_create (OpenGL) failed: " << mpv_error_string(result) << std::endl;
+        std::cerr << "mpv_render_context_create (OpenGL/" << backend << ") failed: " << mpv_error_string(result) << std::endl;
         return false;
     }
+    std::cerr << "mpv OpenGL using backend: " << backend << std::endl;
 
     mpv_render_context_set_update_callback(render_ctx_, onMpvRedraw, this);
-
-    std::cerr << "mpv OpenGL render context created" << std::endl;
     return true;
 }
 
@@ -375,7 +378,7 @@ void MpvPlayerGL::render(int width, int height, int fbo) {
     fbo_params.h = height;
     fbo_params.internal_format = 0;  // Let mpv decide
 
-    int flip_y = 1;  // OpenGL has Y=0 at bottom
+    int flip_y = 1;  // Flip for screen rendering (video is top-down, GL is bottom-up)
 
     mpv_render_param params[] = {
         {MPV_RENDER_PARAM_OPENGL_FBO, &fbo_params},
