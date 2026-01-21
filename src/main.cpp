@@ -935,9 +935,16 @@ int main(int argc, char* argv[]) {
     // Window state notifications
     WindowStateNotifier window_state;
     window_state.add(active_browser);
+#ifdef __APPLE__
+    // macOS: Don't pause video on minimize - CAMetalLayer continues rendering
+#elif defined(_WIN32)
+    MpvLayer mpv_layer(&mpv);
+    window_state.add(&mpv_layer);
+#else
     MpvLayerVk mpv_layer_vk(&mpvVk);
     MpvLayerGL mpv_layer_gl(&mpvGl);
     window_state.add(useWayland ? static_cast<WindowStateListener*>(&mpv_layer_vk) : static_cast<WindowStateListener*>(&mpv_layer_gl));
+#endif
 
     auto last_activity = Clock::now();
     float overlay_alpha = 1.0f;
