@@ -367,6 +367,27 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Player dispatch helpers (macOS has single Vulkan player)
+    auto mpvLoadFile = [&](const std::string& path, double startSec = 0.0) {
+        return mpv.loadFile(path, startSec);
+    };
+    auto mpvStop = [&]() { mpv.stop(); };
+    auto mpvPause = [&]() { mpv.pause(); };
+    auto mpvPlay = [&]() { mpv.play(); };
+    auto mpvSeek = [&](double sec) { mpv.seek(sec); };
+    auto mpvSetVolume = [&](int vol) { mpv.setVolume(vol); };
+    auto mpvSetMuted = [&](bool m) { mpv.setMuted(m); };
+    auto mpvSetSpeed = [&](double s) { mpv.setSpeed(s); };
+    auto mpvSetNormalizationGain = [&](double g) { mpv.setNormalizationGain(g); };
+    auto mpvSetSubtitleTrack = [&](int sid) { mpv.setSubtitleTrack(sid); };
+    auto mpvSetAudioTrack = [&](int aid) { mpv.setAudioTrack(aid); };
+    auto mpvSetAudioDelay = [&](double d) { mpv.setAudioDelay(d); };
+    auto mpvIsPaused = [&]() { return mpv.isPaused(); };
+    auto mpvIsPlaying = [&]() { return mpv.isPlaying(); };
+    auto mpvHasFrame = [&]() { return mpv.hasFrame(); };
+    auto mpvProcessEvents = [&]() { mpv.processEvents(); };
+    auto mpvCleanup = [&]() { mpv.cleanup(); };
+
     // Initialize Metal compositor for CEF overlay (renders on top of video)
     float initial_scale = SDL_GetWindowDisplayScale(window);
     int physical_width = static_cast<int>(width * initial_scale);
@@ -414,6 +435,27 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     std::cerr << "Using OpenGL for video rendering (no HDR)" << std::endl;
+
+    // Player dispatch helpers (Windows has single OpenGL player)
+    auto mpvLoadFile = [&](const std::string& path, double startSec = 0.0) {
+        return mpv.loadFile(path, startSec);
+    };
+    auto mpvStop = [&]() { mpv.stop(); };
+    auto mpvPause = [&]() { mpv.pause(); };
+    auto mpvPlay = [&]() { mpv.play(); };
+    auto mpvSeek = [&](double sec) { mpv.seek(sec); };
+    auto mpvSetVolume = [&](int vol) { mpv.setVolume(vol); };
+    auto mpvSetMuted = [&](bool m) { mpv.setMuted(m); };
+    auto mpvSetSpeed = [&](double s) { mpv.setSpeed(s); };
+    auto mpvSetNormalizationGain = [&](double g) { mpv.setNormalizationGain(g); };
+    auto mpvSetSubtitleTrack = [&](int sid) { mpv.setSubtitleTrack(sid); };
+    auto mpvSetAudioTrack = [&](int aid) { mpv.setAudioTrack(aid); };
+    auto mpvSetAudioDelay = [&](double d) { mpv.setAudioDelay(d); };
+    auto mpvIsPaused = [&]() { return mpv.isPaused(); };
+    auto mpvIsPlaying = [&]() { return mpv.isPlaying(); };
+    auto mpvHasFrame = [&]() { return mpv.hasFrame(); };
+    auto mpvProcessEvents = [&]() { mpv.processEvents(); };
+    auto mpvCleanup = [&]() { mpv.cleanup(); };
 
     // Initialize OpenGL compositor for CEF overlay
     OpenGLCompositor compositor;
@@ -996,6 +1038,19 @@ int main(int argc, char* argv[]) {
     };
 
     // Set callbacks on the active player
+#if defined(__APPLE__) || defined(_WIN32)
+    mpv.setPositionCallback(positionCb);
+    mpv.setDurationCallback(durationCb);
+    mpv.setPlayingCallback(playingCb);
+    mpv.setStateCallback(stateCb);
+    mpv.setFinishedCallback(finishedCb);
+    mpv.setCanceledCallback(canceledCb);
+    mpv.setSeekedCallback(seekedCb);
+    mpv.setBufferingCallback(bufferingCb);
+    mpv.setBufferedRangesCallback(bufferedRangesCb);
+    mpv.setCoreIdleCallback(coreIdleCb);
+    mpv.setErrorCallback(errorCb);
+#else
     if (useWayland) {
         mpvVk.setPositionCallback(positionCb);
         mpvVk.setDurationCallback(durationCb);
@@ -1031,6 +1086,7 @@ int main(int argc, char* argv[]) {
         mpvGl.setCoreIdleCallback(coreIdleCb);
         mpvGl.setErrorCallback(errorCb);
     }
+#endif
 
     // Auto-load test video if provided via --video
     if (!test_video.empty()) {
