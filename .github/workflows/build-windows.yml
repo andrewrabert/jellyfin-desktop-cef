@@ -9,16 +9,24 @@ on:
       - 'v*'
 
 env:
-  MPV_VERSION: "20251214-git-f7be2ee"
-  MPV_VERSION_ARM64: "20250302-git-ee07dcf"
-  SDL_VERSION: "3.2.14"
+  MPV_VERSION: "20260118-git-468d34c"
+  SDL_VERSION: "3.4.0"
 
 jobs:
   build:
-    runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
-        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runner: windows-latest
+            platform: windows64
+            mpv_arch: x86_64-v3
+          - arch: arm64
+            runner: windows-11-arm
+            platform: windowsarm64
+            mpv_arch: aarch64
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
@@ -50,7 +58,7 @@ jobs:
 
       - name: Download CEF
         run: |
-          python dev/download_cef.py --platform ${{ matrix.arch == 'arm64' && 'windowsarm64' || 'windows64' }}
+          python dev/download_cef.py --platform ${{ matrix.platform }}
 
       - name: Download SDL3
         shell: bash
@@ -67,11 +75,7 @@ jobs:
           rm -rf third_party/mpv
           mkdir -p third_party/mpv/lib
           mv third_party/mpv-include third_party/mpv/include
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            curl -L "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-aarch64-${MPV_VERSION_ARM64}.7z/download" -o mpv.7z
-          else
-            curl -L "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-x86_64-v3-${MPV_VERSION}.7z/download" -o mpv.7z
-          fi
+          curl -L "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-${{ matrix.mpv_arch }}-${MPV_VERSION}.7z/download" -o mpv.7z
           7z x mpv.7z -ompv-tmp
           mv mpv-tmp/libmpv-2.dll third_party/mpv/lib/
           # Generate .def file from DLL (package doesn't include it)
@@ -79,29 +83,22 @@ jobs:
           gendef libmpv-2.dll
 
       - name: Install Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
-        with:
-          vulkan-query-version: 1.3.290.0
-          vulkan-components: Vulkan-Headers, Vulkan-Loader
-          vulkan-use-cache: true
-
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
-
-      - name: Generate mpv import library
-        shell: cmd
+        shell: pwsh
         run: |
-          cd third_party\mpv\lib
-          lib /def:libmpv-2.def /out:mpv.lib /MACHINE:${{ matrix.arch == 'arm64' && 'ARM64' || 'X64' }}
+          winget install KhronosGroup.VulkanSDK --accept-source-agreements --accept-package-agreements
+          $sdkPath = Get-ChildItem "C:\VulkanSDK" | Sort-Object Name -Descending | Select-Object -First 1
+          echo "VULKAN_SDK=$($sdkPath.FullName)" >> $env:GITHUB_ENV
+          echo "$($sdkPath.FullName)\Bin" >> $env:GITHUB_PATH
 
       - name: Configure and build
         shell: cmd
         run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch }}
+          cd third_party\mpv\lib
+          lib /def:libmpv-2.def /out:mpv.lib /MACHINE:${{ matrix.arch == 'arm64' && 'ARM64' || 'X64' }}
+          cd %GITHUB_WORKSPACE%
           cmake -B build -G Ninja ^
             -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-            -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch == 'arm64' && 'ARM64' || 'AMD64' }} ^
             -DSDL3_DIR=%CD%\third_party\SDL\cmake ^
             -DEXTERNAL_MPV_DIR=%CD%\third_party\mpv
           cmake --build build

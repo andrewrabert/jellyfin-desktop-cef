@@ -16,6 +16,7 @@ sudo xattr -cr /Applications/Jellyfin\ Desktop\ CEF.app
 
 ### Windows
 - [x64](https://nightly.link/jellyfin-labs/jellyfin-desktop-cef/workflows/build-windows/main/windows-x64.zip)
+- [arm64](https://nightly.link/jellyfin-labs/jellyfin-desktop-cef/workflows/build-windows/main/windows-arm64.zip)
 
 
 ## Architecture

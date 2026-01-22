@@ -39,6 +39,10 @@ find_package(CEF REQUIRED)
 find_package(SDL3 REQUIRED)
 
 # Vulkan (for video subsurface)
+# On Windows ARM64, hint the correct Vulkan library path
+if(WIN32 AND CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64" AND DEFINED ENV{VULKAN_SDK})
+    set(Vulkan_LIBRARY "$ENV{VULKAN_SDK}/Lib/vulkan-1.lib")
+endif()
 find_package(Vulkan REQUIRED)
 
 # Platform-specific dependencies
@@ -404,7 +408,11 @@ if(WIN32)
     install(DIRECTORY "${CEF_RESOURCE_DIR}/locales" DESTINATION .)
 
     # SDL3
-    install(FILES "${CMAKE_SOURCE_DIR}/third_party/SDL/lib/x64/SDL3.dll" DESTINATION .)
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64")
+        install(FILES "${CMAKE_SOURCE_DIR}/third_party/SDL/lib/arm64/SDL3.dll" DESTINATION .)
+    else()
+        install(FILES "${CMAKE_SOURCE_DIR}/third_party/SDL/lib/x64/SDL3.dll" DESTINATION .)
+    endif()
 
     # libmpv
     if(EXTERNAL_MPV_DIR)

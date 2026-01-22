@@ -1018,7 +1018,7 @@ int main(int argc, char* argv[]) {
             mediaSession.setRate(current_playback_rate);
         }
     };
-    auto bufferedRangesCb = [&](const std::vector<MpvPlayerVk::BufferedRange>& ranges) {
+    auto bufferedRangesCb = [&](const auto& ranges) {
         std::string json = "[";
         for (size_t i = 0; i < ranges.size(); i++) {
             if (i > 0) json += ",";

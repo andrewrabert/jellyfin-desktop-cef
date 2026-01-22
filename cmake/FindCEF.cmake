@@ -123,8 +123,16 @@ else()
     # Build wrapper if not found
     if(NOT CEF_WRAPPER_PATH)
         message(STATUS "libcef_dll_wrapper not found, building...")
+        # Pass generator and architecture settings to match the main build
+        set(_CEF_CMAKE_ARGS -B build -DCMAKE_BUILD_TYPE=Release)
+        if(CMAKE_GENERATOR)
+            list(APPEND _CEF_CMAKE_ARGS -G "${CMAKE_GENERATOR}")
+        endif()
+        if(WIN32 AND CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64")
+            list(APPEND _CEF_CMAKE_ARGS -DPROJECT_ARCH=arm64)
+        endif()
         execute_process(
-            COMMAND ${CMAKE_COMMAND} -B build -DCMAKE_BUILD_TYPE=Release
+            COMMAND ${CMAKE_COMMAND} ${_CEF_CMAKE_ARGS}
             WORKING_DIRECTORY ${CEF_ROOT}
             RESULT_VARIABLE CEF_CONFIG_RESULT
         )
