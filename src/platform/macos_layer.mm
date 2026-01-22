@@ -2,7 +2,7 @@
 
 #import "macos_layer.h"
 #import <Cocoa/Cocoa.h>
-#import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/QuartzCore.h>
 #import <Metal/Metal.h>
 #include <vector>
 #include <algorithm>
@@ -53,6 +53,7 @@ bool MacOSVideoLayer::init(SDL_Window* window, VkInstance, VkPhysicalDevice,
 
     video_view_ = [[NSView alloc] initWithFrame:frame];
     [video_view_ setWantsLayer:YES];
+    [video_view_ setLayerContentsRedrawPolicy:NSViewLayerContentsRedrawDuringViewResize];
     [video_view_ setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
     // Create CAMetalLayer with HDR support
@@ -65,6 +66,17 @@ bool MacOSVideoLayer::init(SDL_Window* window, VkInstance, VkPhysicalDevice,
     CGColorSpaceRelease(colorspace);
     metal_layer_.framebufferOnly = YES;
     metal_layer_.frame = frame;
+
+    // Disable implicit animations to prevent jelly effect during resize
+    // Note: presentsWithTransaction doesn't work well with Vulkan/MoltenVK
+    metal_layer_.actions = @{
+        @"bounds": [NSNull null],
+        @"position": [NSNull null],
+        @"contents": [NSNull null],
+        @"anchorPoint": [NSNull null]
+    };
+    metal_layer_.contentsGravity = kCAGravityTopLeft;
+    metal_layer_.anchorPoint = CGPointMake(0, 0);
 
     [video_view_ setLayer:metal_layer_];
 
@@ -354,7 +366,19 @@ void MacOSVideoLayer::destroySwapchain() {
 }
 
 bool MacOSVideoLayer::startFrame(VkImage* outImage, VkImageView* outView, VkFormat* outFormat) {
-    if (frame_active_ || swapchain_ == VK_NULL_HANDLE) {
+    if (frame_active_) {
+        return false;
+    }
+
+    // Recreate swapchain if size changed
+    if (needs_swapchain_recreate_ || swapchain_ == VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
+        destroySwapchain();
+        createSwapchain(width_, height_);
+        needs_swapchain_recreate_ = false;
+    }
+
+    if (swapchain_ == VK_NULL_HANDLE) {
         return false;
     }
 
@@ -362,6 +386,7 @@ bool MacOSVideoLayer::startFrame(VkImage* outImage, VkImageView* outView, VkForm
                                              image_available_, VK_NULL_HANDLE,
                                              &current_image_idx_);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        needs_swapchain_recreate_ = true;
         return false;
     }
     if (result != VK_SUCCESS) {
@@ -396,14 +421,14 @@ void MacOSVideoLayer::resize(uint32_t width, uint32_t height) {
         return;
     }
 
-    vkDeviceWaitIdle(device_);
-    destroySwapchain();
-    createSwapchain(width, height);
+    // Just update layer drawable size - swapchain will be recreated
+    // when vkAcquireNextImageKHR returns VK_ERROR_OUT_OF_DATE_KHR
+    metal_layer_.drawableSize = CGSizeMake(width, height);
+    width_ = width;
+    height_ = height;
 
-    if (video_view_) {
-        NSRect frame = NSMakeRect(0, 0, width, height);
-        [video_view_ setFrame:frame];
-    }
+    // Mark swapchain as needing recreation (startFrame will handle it)
+    needs_swapchain_recreate_ = true;
 }
 
 void MacOSVideoLayer::setVisible(bool visible) {

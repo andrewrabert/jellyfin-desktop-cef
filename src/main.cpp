@@ -1118,6 +1118,116 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifdef __APPLE__
+    // Live resize support - event watcher is called during modal resize loop
+    struct LiveResizeContext {
+        SDL_Window* window;
+        MetalCompositor* compositor;
+        MetalCompositor* overlay_compositor;
+        Client* client;
+        OverlayClient* overlay_client;
+        MacOSVideoLayer* videoLayer;
+        MpvPlayerVk* mpv;
+        int* current_width;
+        int* current_height;
+        bool* has_subsurface;
+        bool* has_video;
+        float* overlay_alpha;
+        float* overlay_browser_alpha;
+        OverlayState* overlay_state;
+        // Paint buffer access for main browser
+        std::array<PaintBuffer, 2>* paint_buffers;
+        std::atomic<int>* paint_write_idx;
+        std::mutex* paint_swap_mutex;
+    };
+    LiveResizeContext live_resize_ctx = {
+        window,
+        &compositor,
+        &overlay_compositor,
+        client.get(),
+        overlay_client.get(),
+        &videoLayer,
+        &mpv,
+        &current_width,
+        &current_height,
+        &has_subsurface,
+        &has_video,
+        &overlay_alpha,
+        &overlay_browser_alpha,
+        &overlay_state,
+        &paint_buffers,
+        &paint_write_idx,
+        &paint_swap_mutex
+    };
+
+    auto liveResizeCallback = [](void* userdata, SDL_Event* event) -> bool {
+        auto* ctx = static_cast<LiveResizeContext*>(userdata);
+
+        if (event->type == SDL_EVENT_WINDOW_RESIZED) {
+            *ctx->current_width = event->window.data1;
+            *ctx->current_height = event->window.data2;
+
+            // Tell CEF the new size - it will repaint asynchronously
+            ctx->client->resize(*ctx->current_width, *ctx->current_height);
+            ctx->overlay_client->resize(*ctx->current_width, *ctx->current_height);
+
+            // Resize video layer
+            if (*ctx->has_subsurface) {
+                ctx->videoLayer->resize(*ctx->current_width, *ctx->current_height);
+            }
+        }
+
+        // Pump CEF and render on EXPOSED events during live resize
+        if (event->type == SDL_EVENT_WINDOW_EXPOSED && event->window.data1 == 1) {
+            // Pump CEF message loop - this allows CEF to deliver paint callbacks
+            CefDoMessageLoopWork();
+
+            // Render video if playing
+            if (*ctx->has_video && *ctx->has_subsurface && ctx->mpv->hasFrame()) {
+                VkImage sub_image;
+                VkImageView sub_view;
+                VkFormat sub_format;
+                if (ctx->videoLayer->startFrame(&sub_image, &sub_view, &sub_format)) {
+                    ctx->mpv->render(sub_image, sub_view,
+                                     ctx->videoLayer->width(), ctx->videoLayer->height(),
+                                     sub_format);
+                    ctx->videoLayer->submitFrame();
+                }
+            }
+
+            // Flush main browser paint buffer to compositor staging
+            {
+                std::lock_guard<std::mutex> lock(*ctx->paint_swap_mutex);
+                int read_idx = 1 - ctx->paint_write_idx->load(std::memory_order_acquire);
+                auto& buf = (*ctx->paint_buffers)[read_idx];
+                if (buf.dirty && !buf.data.empty()) {
+                    void* staging = ctx->compositor->getStagingBuffer(buf.width, buf.height);
+                    if (staging) {
+                        memcpy(staging, buf.data.data(), buf.width * buf.height * 4);
+                        ctx->compositor->markStagingDirty();
+                    }
+                    buf.dirty = false;
+                }
+            }
+
+            // Composite browser content
+            if (ctx->compositor->hasValidOverlay() || ctx->compositor->hasPendingContent()) {
+                ctx->compositor->composite(*ctx->current_width, *ctx->current_height, *ctx->overlay_alpha);
+            }
+
+            if (*ctx->overlay_state != OverlayState::HIDDEN && *ctx->overlay_browser_alpha > 0.01f) {
+                if (ctx->overlay_compositor->hasValidOverlay() || ctx->overlay_compositor->hasPendingContent()) {
+                    ctx->overlay_compositor->composite(*ctx->current_width, *ctx->current_height, *ctx->overlay_browser_alpha);
+                }
+            }
+        }
+
+        return true;
+    };
+
+    SDL_AddEventWatch(liveResizeCallback, &live_resize_ctx);
+#endif
+
     // Main loop - simplified (no Vulkan command buffers for main surface)
     bool running = true;
     bool needs_render = true;  // Render first frame
@@ -1666,6 +1776,9 @@ int main(int argc, char* argv[]) {
     }
 
     // Cleanup
+#ifdef __APPLE__
+    SDL_RemoveEventWatch(liveResizeCallback, &live_resize_ctx);
+#endif
     mpvCleanup();
     compositor.cleanup();
     overlay_compositor.cleanup();

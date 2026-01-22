@@ -89,6 +89,7 @@ private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     bool is_hdr_ = false;
+    bool needs_swapchain_recreate_ = false;
 
     // Features/extensions for mpv (must persist for the feature chain)
     VkPhysicalDeviceFeatures2 features2_{};

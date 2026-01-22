@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Jellyfin Desktop CEF - Run built app
 # Run build.sh first
-set -eu
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"

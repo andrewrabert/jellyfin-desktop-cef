@@ -3,7 +3,7 @@
 #import "metal_compositor.h"
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/QuartzCore.h>
 #include <cstring>
 
 // Helper macros for void* casts
@@ -89,6 +89,7 @@ bool MetalCompositor::init(SDL_Window* window, uint32_t width, uint32_t height) 
 
     metal_view_ = [[NSView alloc] initWithFrame:frame];
     [metal_view_ setWantsLayer:YES];
+    [metal_view_ setLayerContentsRedrawPolicy:NSViewLayerContentsRedrawDuringViewResize];
     [metal_view_ setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
 
     metal_layer_ = [CAMetalLayer layer];
@@ -99,6 +100,17 @@ bool MetalCompositor::init(SDL_Window* window, uint32_t width, uint32_t height) 
     metal_layer_.drawableSize = CGSizeMake(width, height);
     metal_layer_.contentsScale = [ns_window backingScaleFactor];
     metal_layer_.opaque = NO;  // Allow transparency for video to show through
+    metal_layer_.presentsWithTransaction = YES;  // Sync presents with CA for fluid resize
+
+    // Disable implicit animations to prevent jelly effect during resize
+    metal_layer_.actions = @{
+        @"bounds": [NSNull null],
+        @"position": [NSNull null],
+        @"contents": [NSNull null],
+        @"anchorPoint": [NSNull null]
+    };
+    metal_layer_.contentsGravity = kCAGravityTopLeft;
+    metal_layer_.anchorPoint = CGPointMake(0, 0);
 
     [metal_view_ setLayer:metal_layer_];
 
@@ -162,7 +174,7 @@ bool MetalCompositor::createPipeline() {
 }
 
 bool MetalCompositor::createTexture(uint32_t width, uint32_t height) {
-    // Release old texture if any
+    // Release old texture
     if (texture_) {
         CFBridgingRelease(texture_);
         texture_ = nullptr;
@@ -180,6 +192,7 @@ bool MetalCompositor::createTexture(uint32_t width, uint32_t height) {
         return false;
     }
     texture_ = (void*)CFBridgingRetain(texture);
+    // Keep has_content_ - CEF will repaint at new size via CefDoMessageLoopWork
 
     return true;
 }
@@ -299,8 +312,10 @@ void MetalCompositor::composite(uint32_t width, uint32_t height, float alpha) {
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
 
-        [commandBuffer presentDrawable:drawable];
+        // With presentsWithTransaction=YES, wait for GPU then present in CA transaction
         [commandBuffer commit];
+        [commandBuffer waitUntilScheduled];
+        [drawable present];
     }
 }
 
@@ -320,7 +335,7 @@ void MetalCompositor::resize(uint32_t width, uint32_t height) {
     width_ = width;
     height_ = height;
 
-    // Resize layer drawable (physical pixels)
+    // Update layer drawable size (layer frame auto-resizes with view)
     if (metal_layer_) {
         metal_layer_.drawableSize = CGSizeMake(width, height);
         if (parent_window_) {
@@ -328,24 +343,14 @@ void MetalCompositor::resize(uint32_t width, uint32_t height) {
         }
     }
 
-    // View frame uses logical coordinates - get from superview
-    if (metal_view_ && [metal_view_ superview]) {
-        NSRect frame = [[metal_view_ superview] bounds];
-        [metal_view_ setFrame:frame];
-    }
-
-    // Recreate texture
+    // Recreate texture and staging buffer
     createTexture(width, height);
 
-    // Resize staging buffer
     if (staging_buffer_) {
         free(staging_buffer_);
     }
     staging_size_ = width * height * 4;
     staging_buffer_ = malloc(staging_size_);
-    has_content_ = false;
-
-    NSLog(@"MetalCompositor: resized to %dx%d", width, height);
 }
 
 #endif // __APPLE__
