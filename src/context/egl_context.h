@@ -3,16 +3,13 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
-#include <GLES2/gl2ext.h>  // For GL_BGRA_EXT and OES extensions
+#include <GLES2/gl2ext.h>  // For GL_BGRA_EXT
 #include <SDL3/SDL.h>
 
 // Define BGRA if not available
 #ifndef GL_BGRA_EXT
 #define GL_BGRA_EXT 0x80E1
 #endif
-
-// OES extension type for EGLImage to texture
-typedef void (*PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)(GLenum target, void* image);
 
 class EGLContext_ {
 public:
@@ -29,14 +26,6 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
 
-    // DMA-BUF extension support
-    bool hasDmaBufImport() const { return has_dmabuf_import_; }
-
-    // Extension function pointers
-    PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR = nullptr;
-    PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR = nullptr;
-    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES = nullptr;
-
 private:
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLSurface surface_ = EGL_NO_SURFACE;
@@ -46,6 +35,5 @@ private:
 
     int width_ = 0;
     int height_ = 0;
-    bool has_dmabuf_import_ = false;
     bool is_wayland_ = false;
 };

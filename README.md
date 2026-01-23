@@ -35,5 +35,4 @@ See [dev/](dev/README.md) for build instructions.
 ## Options
 
 - `--video <path>` - Load video directly (for testing)
-- `--gpu-overlay` - Enable DMA-BUF shared textures for CEF (experimental)
 - `--remote-debugging-port=<port>` - Enable Chrome DevTools

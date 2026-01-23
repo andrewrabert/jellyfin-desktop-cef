@@ -46,18 +46,6 @@ bool EGLContext_::init(SDL_Window* window) {
         }
         std::cerr << "[EGL] Initialized EGL " << major << "." << minor << " (Wayland)" << std::endl;
 
-        // Check extensions
-        const char* extensions = eglQueryString(display_, EGL_EXTENSIONS);
-        if (extensions) {
-            has_dmabuf_import_ = strstr(extensions, "EGL_EXT_image_dma_buf_import") != nullptr;
-            std::cerr << "[EGL] DMA-BUF import: " << (has_dmabuf_import_ ? "yes" : "no") << std::endl;
-        }
-
-        // Load extension functions
-        eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
-        eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
-        glEGLImageTargetTexture2DOES = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
-
         // Bind OpenGL ES API
         if (!eglBindAPI(EGL_OPENGL_ES_API)) {
             std::cerr << "[EGL] Failed to bind OpenGL ES API" << std::endl;
@@ -140,18 +128,6 @@ bool EGLContext_::init(SDL_Window* window) {
             return false;
         }
         std::cerr << "[EGL] Initialized EGL " << major << "." << minor << " (X11)" << std::endl;
-
-        // Check extensions
-        const char* extensions = eglQueryString(display_, EGL_EXTENSIONS);
-        if (extensions) {
-            has_dmabuf_import_ = strstr(extensions, "EGL_EXT_image_dma_buf_import") != nullptr;
-            std::cerr << "[EGL] DMA-BUF import: " << (has_dmabuf_import_ ? "yes" : "no") << std::endl;
-        }
-
-        // Load extension functions
-        eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
-        eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
-        glEGLImageTargetTexture2DOES = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
 
         // Bind OpenGL ES API
         if (!eglBindAPI(EGL_OPENGL_ES_API)) {

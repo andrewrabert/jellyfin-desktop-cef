@@ -270,19 +270,15 @@ int main(int argc, char* argv[]) {
 
     // Parse CLI args
     std::string test_video;
-    bool use_gpu_overlay = false;  // DMA-BUF shared textures (experimental)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             std::cout << "Usage: jellyfin-desktop [options]\n"
                       << "\nOptions:\n"
                       << "  -h, --help       Show this help message\n"
-                      << "  --video <file>   Load video file on startup\n"
-                      << "  --gpu-overlay    Enable GPU overlay (experimental)\n";
+                      << "  --video <file>   Load video file on startup\n";
             return 0;
         } else if (strcmp(argv[i], "--video") == 0 && i + 1 < argc) {
             test_video = argv[++i];
-        } else if (strcmp(argv[i], "--gpu-overlay") == 0) {
-            use_gpu_overlay = true;
         }
     }
 
@@ -455,7 +451,7 @@ int main(int argc, char* argv[]) {
 
     // Initialize OpenGL compositor for CEF overlay
     OpenGLCompositor compositor;
-    if (!compositor.init(&wgl, width, height, false)) {  // Software path only on Windows for now
+    if (!compositor.init(&wgl, width, height)) {
         std::cerr << "OpenGLCompositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -464,7 +460,7 @@ int main(int argc, char* argv[]) {
 
     // Second compositor for overlay browser
     OpenGLCompositor overlay_compositor;
-    if (!overlay_compositor.init(&wgl, width, height, false)) {
+    if (!overlay_compositor.init(&wgl, width, height)) {
         std::cerr << "Overlay compositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -567,7 +563,7 @@ int main(int argc, char* argv[]) {
               << " physical=" << physical_width << "x" << physical_height << std::endl;
 
     OpenGLCompositor compositor;
-    if (!compositor.init(&egl, physical_width, physical_height, use_gpu_overlay)) {
+    if (!compositor.init(&egl, physical_width, physical_height)) {
         std::cerr << "OpenGLCompositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -576,7 +572,7 @@ int main(int argc, char* argv[]) {
 
     // Second compositor for overlay browser
     OpenGLCompositor overlay_compositor;
-    if (!overlay_compositor.init(&egl, physical_width, physical_height, false)) {
+    if (!overlay_compositor.init(&egl, physical_width, physical_height)) {
         std::cerr << "Overlay compositor init failed" << std::endl;
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -646,10 +642,6 @@ int main(int argc, char* argv[]) {
         CefString(&settings.root_cache_path).FromString(cache_path.string());
         CefString(&settings.cache_path).FromString((cache_path / "cache").string());
     }
-
-    // Set GPU overlay mode before CefInitialize (affects command line processing)
-    App::SetGpuOverlayEnabled(use_gpu_overlay);
-    std::cerr << "CEF rendering: " << (use_gpu_overlay ? "GPU (DMA-BUF)" : "software") << std::endl;
 
     if (!CefInitialize(main_args, settings, app, nullptr)) {
         std::cerr << "CefInitialize failed" << std::endl;
@@ -829,14 +821,7 @@ int main(int argc, char* argv[]) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
             pending_cmds.push_back({cmd, arg, intArg, 0.0, metadata});
         },
-#if defined(__APPLE__) || defined(_WIN32)
-        nullptr,  // No GPU accelerated paint on macOS/Windows
-#else
-        [&](const AcceleratedPaintInfo& info) {
-            // GPU accelerated paint - queue DMA-BUF for import in render loop
-            compositor.queueDmaBuf(info);
-        },
-#endif
+        nullptr,  // No GPU accelerated paint
         &menu,
         [&](cef_cursor_type_t type) {
             SDL_SystemCursor sdl_type = cefCursorToSDL(type);
@@ -869,9 +854,6 @@ int main(int argc, char* argv[]) {
 
     CefWindowInfo window_info;
     window_info.SetAsWindowless(0);
-#if defined(__linux__) && !defined(_WIN32)
-    window_info.shared_texture_enabled = use_gpu_overlay;
-#endif
 
     CefBrowserSettings browser_settings;
     browser_settings.background_color = 0;
@@ -1241,11 +1223,7 @@ int main(int argc, char* argv[]) {
         // Event-driven: wait for events when idle, poll when active
         SDL_Event event;
         bool have_event;
-#if defined(__APPLE__) || defined(_WIN32)
         if (needs_render || has_video || compositor.hasPendingContent()) {
-#else
-        if (needs_render || has_video || compositor.hasPendingContent() || compositor.hasPendingDmaBuf()) {
-#endif
             have_event = SDL_PollEvent(&event);
         } else {
             // Short wait - just yield CPU, don't block long (1ms for ~1000Hz max)
@@ -1419,12 +1397,7 @@ int main(int argc, char* argv[]) {
 #endif
 
         // Determine if we need to render this frame
-        // With vsync, always render to maintain consistent frame pacing
-#if defined(__APPLE__) || defined(_WIN32)
         needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || overlay_state == OverlayState::FADING;
-#else
-        needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || compositor.hasPendingDmaBuf() || overlay_state == OverlayState::FADING;
-#endif
 
         // Process player commands
         {
@@ -1703,9 +1676,6 @@ int main(int argc, char* argv[]) {
                     video_needs_rerender = false;
                 }
             }
-
-            // Import queued DMA-BUF if any (GPU path)
-            compositor.importQueuedDmaBuf();
 
             flushPaintBuffer();
             compositor.flushOverlay();

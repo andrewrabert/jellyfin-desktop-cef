@@ -20,10 +20,6 @@ class App : public CefApp,
 public:
     App() = default;
 
-    // Set before CefInitialize to enable GPU overlay (DMA-BUF shared textures)
-    static void SetGpuOverlayEnabled(bool enabled) { gpu_overlay_enabled_ = enabled; }
-    static bool IsGpuOverlayEnabled() { return gpu_overlay_enabled_; }
-
     // Check if CEF needs work done (for external_message_pump mode)
     static bool NeedsWork() { return cef_work_pending_.exchange(false); }
     static int64_t GetWorkDelay() { return cef_work_delay_ms_; }
@@ -49,7 +45,6 @@ public:
                          CefRefPtr<CefV8Context> context) override;
 
 private:
-    static inline bool gpu_overlay_enabled_ = false;
     static inline std::atomic<bool> cef_work_pending_{false};
     static inline std::atomic<int64_t> cef_work_delay_ms_{0};
 

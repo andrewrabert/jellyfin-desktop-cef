@@ -46,12 +46,9 @@ void App::OnBeforeCommandLineProcessing(const CefString& process_type,
     command_line->AppendSwitch("single-process");
 #endif
 
-    // Disable GPU rendering unless --gpu-overlay is specified
-    // Software rendering is more stable and performs well for UI overlays
-    if (!gpu_overlay_enabled_) {
-        command_line->AppendSwitch("disable-gpu");
-        command_line->AppendSwitch("disable-gpu-compositing");
-    }
+    // Disable GPU rendering - software rendering is more stable for UI overlays
+    command_line->AppendSwitch("disable-gpu");
+    command_line->AppendSwitch("disable-gpu-compositing");
 }
 
 void App::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) {

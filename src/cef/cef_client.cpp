@@ -202,27 +202,15 @@ private:
     IMPLEMENT_REFCOUNTING(ConnectivityURLRequestClient);
 };
 
-#ifdef __APPLE__
 Client::Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg,
-               IOSurfacePaintCallback on_iosurface_paint, MenuOverlay* menu,
+               void* /*unused*/, MenuOverlay* menu,
                CursorChangeCallback on_cursor_change, FullscreenChangeCallback on_fullscreen_change,
                PhysicalSizeCallback physical_size_cb)
     : width_(width), height_(height), on_paint_(std::move(on_paint)),
-      on_player_msg_(std::move(on_player_msg)), on_iosurface_paint_(std::move(on_iosurface_paint)),
+      on_player_msg_(std::move(on_player_msg)),
       menu_(menu), on_cursor_change_(std::move(on_cursor_change)),
       on_fullscreen_change_(std::move(on_fullscreen_change)),
       physical_size_cb_(std::move(physical_size_cb)) {}
-#else
-Client::Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg,
-               AcceleratedPaintCallback on_accel_paint, MenuOverlay* menu,
-               CursorChangeCallback on_cursor_change, FullscreenChangeCallback on_fullscreen_change,
-               PhysicalSizeCallback physical_size_cb)
-    : width_(width), height_(height), on_paint_(std::move(on_paint)),
-      on_player_msg_(std::move(on_player_msg)), on_accel_paint_(std::move(on_accel_paint)),
-      menu_(menu), on_cursor_change_(std::move(on_cursor_change)),
-      on_fullscreen_change_(std::move(on_fullscreen_change)),
-      physical_size_cb_(std::move(physical_size_cb)) {}
-#endif
 
 bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                                cef_log_severity_t level,
@@ -478,43 +466,6 @@ void Client::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
         }
     }
     on_paint_(composite_buffer_.data(), width, height);
-}
-
-void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
-                                const RectList& dirtyRects,
-                                const CefAcceleratedPaintInfo& info) {
-#ifdef __APPLE__
-    // macOS: IOSurface path
-    if (on_iosurface_paint_ && info.shared_texture_io_surface) {
-        on_iosurface_paint_(static_cast<IOSurfaceRef>(info.shared_texture_io_surface), width_, height_);
-    }
-#elif defined(__linux__)
-    // Linux: DMA-BUF path
-    if (on_accel_paint_) {
-        AcceleratedPaintInfo paintInfo;
-        paintInfo.width = width_;
-        paintInfo.height = height_;
-        paintInfo.modifier = info.modifier;
-        paintInfo.format = info.format;
-
-        for (int i = 0; i < info.plane_count; i++) {
-            DmaBufPlane plane;
-            plane.fd = dup(info.planes[i].fd);  // Duplicate before CEF releases it
-            plane.stride = info.planes[i].stride;
-            plane.offset = info.planes[i].offset;
-            plane.size = info.planes[i].size;
-            paintInfo.planes.push_back(plane);
-        }
-
-        on_accel_paint_(paintInfo);
-    }
-#else
-    // Windows: No GPU texture sharing yet, use software path via OnPaint
-    (void)browser;
-    (void)type;
-    (void)dirtyRects;
-    (void)info;
-#endif
 }
 
 void Client::OnAfterCreated(CefRefPtr<CefBrowser> browser) {

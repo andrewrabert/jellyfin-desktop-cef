@@ -9,10 +9,6 @@
 #include <functional>
 #include <vector>
 
-#ifdef __APPLE__
-#include <IOSurface/IOSurface.h>
-#endif
-
 class MenuOverlay;
 
 // Interface for input routing
@@ -49,46 +45,15 @@ using FullscreenChangeCallback = std::function<void(bool fullscreen)>;
 // Physical pixel size callback (returns actual framebuffer dimensions)
 using PhysicalSizeCallback = std::function<void(int& width, int& height)>;
 
-#ifdef __APPLE__
-// macOS: IOSurface callback
-using IOSurfacePaintCallback = std::function<void(IOSurfaceRef surface, int width, int height)>;
-#else
-// Linux: DMA-BUF plane info for accelerated paint
-struct DmaBufPlane {
-    int fd;
-    uint32_t stride;
-    uint64_t offset;
-    uint64_t size;
-};
-
-struct AcceleratedPaintInfo {
-    int width;
-    int height;
-    uint64_t modifier;
-    uint32_t format;  // DRM format
-    std::vector<DmaBufPlane> planes;
-};
-
-using AcceleratedPaintCallback = std::function<void(const AcceleratedPaintInfo& info)>;
-#endif
-
 class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler, public CefContextMenuHandler, public InputReceiver {
 public:
     using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
 
-#ifdef __APPLE__
     Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg = nullptr,
-           IOSurfacePaintCallback on_iosurface_paint = nullptr, MenuOverlay* menu = nullptr,
+           void* unused = nullptr, MenuOverlay* menu = nullptr,
            CursorChangeCallback on_cursor_change = nullptr,
            FullscreenChangeCallback on_fullscreen_change = nullptr,
            PhysicalSizeCallback physical_size_cb = nullptr);
-#else
-    Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg = nullptr,
-           AcceleratedPaintCallback on_accel_paint = nullptr, MenuOverlay* menu = nullptr,
-           CursorChangeCallback on_cursor_change = nullptr,
-           FullscreenChangeCallback on_fullscreen_change = nullptr,
-           PhysicalSizeCallback physical_size_cb = nullptr);
-#endif
 
     // CefClient
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
@@ -122,9 +87,6 @@ public:
     void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                  const RectList& dirtyRects, const void* buffer,
                  int width, int height) override;
-    void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
-                            const RectList& dirtyRects,
-                            const CefAcceleratedPaintInfo& info) override;
 
     // CefLifeSpanHandler
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -182,11 +144,6 @@ private:
     int height_;
     PaintCallback on_paint_;
     PlayerMessageCallback on_player_msg_;
-#ifdef __APPLE__
-    IOSurfacePaintCallback on_iosurface_paint_;
-#else
-    AcceleratedPaintCallback on_accel_paint_;
-#endif
     MenuOverlay* menu_ = nullptr;
     CursorChangeCallback on_cursor_change_;
     FullscreenChangeCallback on_fullscreen_change_;
