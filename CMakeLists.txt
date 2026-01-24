@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.21)
 project(jellyfin-desktop-cef LANGUAGES C CXX)
 
 # Enable Objective-C++ on macOS
@@ -9,6 +9,17 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Version info (checks VERSION file and git hash each build, only writes if changed)
+add_custom_target(generate_version ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR="${CMAKE_SOURCE_DIR}"
+        -DBINARY_DIR="${CMAKE_BINARY_DIR}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/GenerateVersion.cmake"
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/src/version.h"
+    COMMENT "Checking version info"
+)
+include_directories("${CMAKE_BINARY_DIR}/src")
 
 # Use static runtime on Windows to match CEF wrapper (which uses /MT)
 if(MSVC)
@@ -275,7 +286,7 @@ add_executable(jellyfin-desktop-cef
 )
 
 # Ensure JS shims are embedded before compiling cef_app.cpp
-add_dependencies(jellyfin-desktop-cef embedded_js embedded_resources)
+add_dependencies(jellyfin-desktop-cef embedded_js embedded_resources generate_version)
 
 target_include_directories(jellyfin-desktop-cef PRIVATE
     ${CEF_INCLUDE_DIRS}

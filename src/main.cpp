@@ -1,6 +1,7 @@
 #include <SDL3/SDL.h>
 #include <filesystem>
 #include "logging.h"
+#include "version.h"
 #include <vector>
 #include <cstring>
 #include <cstdlib>
@@ -250,6 +251,13 @@ int main(int argc, char* argv[]) {
             }
         }
         initLogging(log_level);
+    }
+
+    // Startup banner
+    if (APP_GIT_HASH[0]) {
+        LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s (%s) built " __DATE__ " " __TIME__, APP_VERSION, APP_GIT_HASH);
+    } else {
+        LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s built " __DATE__ " " __TIME__, APP_VERSION);
     }
 
 #ifdef __APPLE__
