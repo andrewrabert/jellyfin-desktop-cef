@@ -28,7 +28,7 @@ int g_original_stderr_fd = -1;
 // Global log file handle (nullptr = stderr only)
 FILE* g_log_file = nullptr;
 
-void writeLogLine(const char* tag, const char* message) {
+void writeLogLine(const char* tag, const char* message, const char* level) {
     // Write to stderr first (no timestamp)
     if (g_original_stderr_fd >= 0) {
 #ifdef _WIN32
@@ -45,7 +45,7 @@ void writeLogLine(const char* tag, const char* message) {
         fprintf(stderr, "%s%s\n", tag, message);
     }
 
-    // Write to log file with timestamp if enabled
+    // Write to log file with timestamp and level if enabled
     if (g_log_file) {
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -62,7 +62,11 @@ void writeLogLine(const char* tag, const char* message) {
                       tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
                       tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
                       static_cast<int>(ms.count()));
-        fprintf(g_log_file, "%s %s%s\n", time_buf, tag, message);
+        if (level) {
+            fprintf(g_log_file, "%s %-7s %s%s\n", time_buf, level, tag, message);
+        } else {
+            fprintf(g_log_file, "%s %s%s\n", time_buf, tag, message);
+        }
         fflush(g_log_file);
     }
 }

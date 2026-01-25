@@ -62,14 +62,27 @@ extern int g_original_stderr_fd;
 // Log file handle (nullptr = stderr only, set before initLogging())
 extern FILE* g_log_file;
 
-// Write a log line to file (with timestamp) and stderr (without timestamp)
-void writeLogLine(const char* tag, const char* message);
+// Get log level string from SDL priority
+inline const char* getLogLevelStr(SDL_LogPriority priority) {
+    switch (priority) {
+        case SDL_LOG_PRIORITY_VERBOSE: return "VERBOSE";
+        case SDL_LOG_PRIORITY_DEBUG:   return "DEBUG";
+        case SDL_LOG_PRIORITY_INFO:    return "INFO";
+        case SDL_LOG_PRIORITY_WARN:    return "WARN";
+        case SDL_LOG_PRIORITY_ERROR:   return "ERROR";
+        case SDL_LOG_PRIORITY_CRITICAL:return "CRITICAL";
+        default:                       return "?";
+    }
+}
+
+// Write a log line to file (with timestamp+level) and stderr (without)
+void writeLogLine(const char* tag, const char* message, const char* level = nullptr);
 
 // Custom log callback that prepends category tags
 inline void SDLCALL logCallback(void* /*userdata*/, int category,
                                  SDL_LogPriority priority, const char* message) {
     const char* tag = getCategoryTag(category);
-    (void)priority;  // unused
+    const char* level = getLogLevelStr(priority);
 
     // Replace newlines with spaces
     std::string sanitized(message);
@@ -77,7 +90,7 @@ inline void SDLCALL logCallback(void* /*userdata*/, int category,
         if (c == '\n' || c == '\r') c = ' ';
     }
 
-    writeLogLine(tag, sanitized.c_str());
+    writeLogLine(tag, sanitized.c_str(), level);
 }
 
 // Stderr capture for CEF/Chromium logs (call before CefInitialize)
