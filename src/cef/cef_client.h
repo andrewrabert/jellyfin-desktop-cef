@@ -123,6 +123,9 @@ public:
     void resize(int width, int height);
     void loadUrl(const std::string& url);
 
+    // Override scale factor (0 = use physical/logical ratio)
+    void setScaleOverride(float scale) { scale_override_ = scale; }
+
     // Execute JavaScript in the browser
     void executeJS(const std::string& code);
 
@@ -148,6 +151,7 @@ private:
     CursorChangeCallback on_cursor_change_;
     FullscreenChangeCallback on_fullscreen_change_;
     PhysicalSizeCallback physical_size_cb_;
+    float scale_override_ = 0.0f;  // 0 = use physical/logical ratio
     std::atomic<bool> is_closed_ = false;
     CefRefPtr<CefBrowser> browser_;
 
@@ -199,6 +203,7 @@ public:
     bool isClosed() const { return is_closed_; }
     CefRefPtr<CefBrowser> browser() const { return browser_; }
     void resize(int width, int height);
+    void setScaleOverride(float scale) { scale_override_ = scale; }
     void sendFocus(bool focused) override;
     void sendMouseMove(int x, int y, int modifiers) override;
     void sendMouseClick(int x, int y, bool down, int button, int clickCount, int modifiers) override;
@@ -220,6 +225,7 @@ private:
     PaintCallback on_paint_;
     LoadServerCallback on_load_server_;
     PhysicalSizeCallback physical_size_cb_;
+    float scale_override_ = 0.0f;
     std::atomic<bool> is_closed_ = false;
     CefRefPtr<CefBrowser> browser_;
 

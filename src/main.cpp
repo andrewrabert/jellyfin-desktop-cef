@@ -622,11 +622,11 @@ int main(int argc, char* argv[]) {
     auto mpvCleanup = [&]() { useWayland ? mpvVk.cleanup() : mpvGl.cleanup(); };
 
     // Initialize OpenGL compositor for CEF overlay
-    float initial_scale = SDL_GetWindowDisplayScale(window);
-    int physical_width = static_cast<int>(width * initial_scale);
-    int physical_height = static_cast<int>(height * initial_scale);
-    LOG_INFO(LOG_WINDOW, "HiDPI: initial_scale=%.2f logical=%dx%d physical=%dx%d",
-             initial_scale, width, height, physical_width, physical_height);
+    // Use SDL physical size - resize handler will update when Wayland reports actual scale
+    int physical_width, physical_height;
+    SDL_GetWindowSizeInPixels(window, &physical_width, &physical_height);
+    LOG_INFO(LOG_WINDOW, "HiDPI: logical=%dx%d physical=%dx%d",
+             width, height, physical_width, physical_height);
 
     OpenGLCompositor compositor;
     if (!compositor.init(&egl, physical_width, physical_height)) {
@@ -821,6 +821,7 @@ int main(int argc, char* argv[]) {
     SDL_Cursor* current_cursor = nullptr;
 
     // Physical pixel size callback for HiDPI support
+    // Use SDL_GetWindowSizeInPixels - reliable after first frame
     auto getPhysicalSize = [window](int& w, int& h) {
         SDL_GetWindowSizeInPixels(window, &w, &h);
     };
@@ -1401,11 +1402,9 @@ int main(int argc, char* argv[]) {
                 LOG_DEBUG(LOG_WINDOW, "[%ldms] resize: total=%ldms", _ms(),
                           std::chrono::duration_cast<std::chrono::milliseconds>(resize_end-resize_start).count());
             } else if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
-                float new_scale = SDL_GetWindowDisplayScale(window);
-                int physical_w = static_cast<int>(current_width * new_scale);
-                int physical_h = static_cast<int>(current_height * new_scale);
-                LOG_INFO(LOG_WINDOW, "HiDPI: Scale changed to %.2f, physical: %dx%d",
-                         new_scale, physical_w, physical_h);
+                int physical_w, physical_h;
+                SDL_GetWindowSizeInPixels(window, &physical_w, &physical_h);
+                LOG_INFO(LOG_WINDOW, "HiDPI: Scale changed, physical: %dx%d", physical_w, physical_h);
 
                 // Resize compositors to new physical dimensions
                 compositor.resize(physical_w, physical_h);

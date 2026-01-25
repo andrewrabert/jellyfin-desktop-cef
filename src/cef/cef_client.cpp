@@ -352,34 +352,33 @@ bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
 }
 
 void Client::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
-    // CEF expects logical dimensions here; device_scale_factor handles scaling
+    // Return logical size - CEF multiplies by device_scale_factor for physical paint buffer
     static bool first = true;
     if (first) {
-        int phys_w = 0, phys_h = 0;
-        if (physical_size_cb_) physical_size_cb_(phys_w, phys_h);
-        LOG_INFO(LOG_CEF, "GetViewRect: returning logical %dx%d (physical=%dx%d)",
-                 width_, height_, phys_w, phys_h);
+        LOG_INFO(LOG_CEF, "GetViewRect: %dx%d (logical)", width_, height_);
         first = false;
     }
     rect.Set(0, 0, width_, height_);
 }
 
 bool Client::GetScreenInfo(CefRefPtr<CefBrowser> browser, CefScreenInfo& screen_info) {
-    // Compute scale from physical/logical ratio
+    // Compute scale from physical/logical - CEF paints at logical * scale = physical
     int physical_w = 0, physical_h = 0;
     if (physical_size_cb_) {
         physical_size_cb_(physical_w, physical_h);
     }
-    // Default to 1.0 scale if physical dimensions not available
-    float scale = 1.0f;
-    if (physical_w > 0 && width_ > 0) {
-        scale = static_cast<float>(physical_w) / width_;
+    float scale = (physical_w > 0 && width_ > 0) ? static_cast<float>(physical_w) / width_ : 1.0f;
+    static bool first = true;
+    if (first) {
+        LOG_INFO(LOG_CEF, "GetScreenInfo: logical=%dx%d physical=%dx%d scale=%.2f",
+                 width_, height_, physical_w, physical_h, scale);
+        first = false;
     }
     screen_info.device_scale_factor = scale;
     screen_info.depth = 32;
     screen_info.depth_per_component = 8;
     screen_info.is_monochrome = false;
-    screen_info.rect = CefRect(0, 0, width_, height_);
+    screen_info.rect = CefRect(0, 0, physical_w, physical_h);
     screen_info.available_rect = screen_info.rect;
     return true;
 }
@@ -803,34 +802,33 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
 }
 
 void OverlayClient::GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) {
-    // CEF expects logical dimensions here; device_scale_factor handles scaling
+    // Return logical size - CEF multiplies by device_scale_factor for physical paint buffer
     static bool first = true;
     if (first) {
-        int phys_w = 0, phys_h = 0;
-        if (physical_size_cb_) physical_size_cb_(phys_w, phys_h);
-        LOG_INFO(LOG_CEF, "Overlay GetViewRect: returning logical %dx%d (physical=%dx%d)",
-                 width_, height_, phys_w, phys_h);
+        LOG_INFO(LOG_CEF, "Overlay GetViewRect: %dx%d (logical)", width_, height_);
         first = false;
     }
     rect.Set(0, 0, width_, height_);
 }
 
 bool OverlayClient::GetScreenInfo(CefRefPtr<CefBrowser> browser, CefScreenInfo& screen_info) {
-    // Compute scale from physical/logical ratio
+    // Compute scale from physical/logical - CEF paints at logical * scale = physical
     int physical_w = 0, physical_h = 0;
     if (physical_size_cb_) {
         physical_size_cb_(physical_w, physical_h);
     }
-    // Default to 1.0 scale if physical dimensions not available
-    float scale = 1.0f;
-    if (physical_w > 0 && width_ > 0) {
-        scale = static_cast<float>(physical_w) / width_;
+    float scale = (physical_w > 0 && width_ > 0) ? static_cast<float>(physical_w) / width_ : 1.0f;
+    static bool first = true;
+    if (first) {
+        LOG_INFO(LOG_CEF, "Overlay GetScreenInfo: logical=%dx%d physical=%dx%d scale=%.2f",
+                 width_, height_, physical_w, physical_h, scale);
+        first = false;
     }
     screen_info.device_scale_factor = scale;
     screen_info.depth = 32;
     screen_info.depth_per_component = 8;
     screen_info.is_monochrome = false;
-    screen_info.rect = CefRect(0, 0, width_, height_);
+    screen_info.rect = CefRect(0, 0, physical_w, physical_h);
     screen_info.available_rect = screen_info.rect;
     return true;
 }

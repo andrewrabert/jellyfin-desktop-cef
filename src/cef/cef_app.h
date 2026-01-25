@@ -12,6 +12,9 @@ class App : public CefApp,
 public:
     App() = default;
 
+    // Set device scale factor before CefInitialize
+    void SetDeviceScaleFactor(float scale) { device_scale_factor_ = scale; }
+
     // Check if CEF needs work done (for external_message_pump mode)
     static bool NeedsWork() { return cef_work_pending_.exchange(false); }
     static int64_t GetWorkDelay() { return cef_work_delay_ms_; }
@@ -39,6 +42,7 @@ public:
 private:
     static inline std::atomic<bool> cef_work_pending_{false};
     static inline std::atomic<int64_t> cef_work_delay_ms_{0};
+    float device_scale_factor_ = 1.0f;
 
     IMPLEMENT_REFCOUNTING(App);
     DISALLOW_COPY_AND_ASSIGN(App);
