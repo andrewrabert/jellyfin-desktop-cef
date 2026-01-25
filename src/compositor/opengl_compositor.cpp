@@ -2,6 +2,15 @@
 #include <cstring>
 #include "logging.h"
 
+#if !defined(__APPLE__) && !defined(_WIN32)
+#include <drm_fourcc.h>  // For DRM_FORMAT_ARGB8888
+#include <unistd.h>      // For close()
+// EGL function pointers for dmabuf import
+static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES = nullptr;
+static PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR = nullptr;
+static PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR = nullptr;
+#endif
+
 #ifdef __APPLE__
 // macOS gl3.h defines GL_BGRA, not GL_BGRA_EXT
 #ifndef GL_BGRA_EXT
@@ -131,10 +140,12 @@ in vec2 texCoord;
 out vec4 fragColor;
 uniform sampler2D overlayTex;
 uniform float alpha;
+uniform float swizzleBgra;  // 1.0 = swizzle BGRA->RGBA (PBO path), 0.0 = no swizzle (dmabuf)
 void main() {
     vec4 color = texture(overlayTex, texCoord);
-    // CEF provides BGRA, uploaded as RGBA - swizzle back
-    fragColor = color.bgra * alpha;
+    // Mix between direct color and BGRA swizzle based on uniform
+    vec4 swizzled = color.bgra;
+    fragColor = mix(color, swizzled, swizzleBgra) * alpha;
 }
 )";
 #endif
@@ -152,6 +163,27 @@ bool OpenGLCompositor::init(GLContext* ctx, uint32_t width, uint32_t height) {
 
 #ifdef _WIN32
     loadWGLExtensions();
+#endif
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // Load EGL extensions for dmabuf import
+    if (!glEGLImageTargetTexture2DOES) {
+        glEGLImageTargetTexture2DOES = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)
+            eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    }
+    if (!eglCreateImageKHR) {
+        eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)
+            eglGetProcAddress("eglCreateImageKHR");
+    }
+    if (!eglDestroyImageKHR) {
+        eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)
+            eglGetProcAddress("eglDestroyImageKHR");
+    }
+    if (glEGLImageTargetTexture2DOES && eglCreateImageKHR && eglDestroyImageKHR) {
+        LOG_INFO(LOG_COMPOSITOR, "EGL dmabuf import extensions loaded");
+    } else {
+        LOG_WARN(LOG_COMPOSITOR, "EGL dmabuf import extensions not available");
+    }
 #endif
 
     if (!createTexture()) return false;
@@ -279,6 +311,7 @@ bool OpenGLCompositor::createShader() {
 
     // Get uniform locations
     alpha_loc_ = glGetUniformLocation(program_, "alpha");
+    swizzle_loc_ = glGetUniformLocation(program_, "swizzleBgra");
 
     return true;
 }
@@ -333,6 +366,143 @@ bool OpenGLCompositor::flushOverlay() {
     return true;
 }
 
+void OpenGLCompositor::queueDmabuf(int fd, uint32_t stride, uint64_t modifier, int w, int h) {
+#if !defined(__APPLE__) && !defined(_WIN32)
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Close any previously queued fd that wasn't imported
+    if (dmabuf_pending_ && queued_dmabuf_.fd >= 0) {
+        close(queued_dmabuf_.fd);
+    }
+
+    queued_dmabuf_.fd = fd;
+    queued_dmabuf_.stride = stride;
+    queued_dmabuf_.modifier = modifier;
+    queued_dmabuf_.width = w;
+    queued_dmabuf_.height = h;
+    dmabuf_pending_ = true;
+#else
+    (void)fd; (void)stride; (void)modifier; (void)w; (void)h;
+#endif
+}
+
+bool OpenGLCompositor::importQueuedDmabuf() {
+#if !defined(__APPLE__) && !defined(_WIN32)
+    if (!glEGLImageTargetTexture2DOES || !eglCreateImageKHR || !eglDestroyImageKHR || !ctx_) {
+        return false;
+    }
+
+    // Get queued dmabuf under lock
+    int fd;
+    uint32_t stride;
+    uint64_t modifier;
+    int w, h;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!dmabuf_pending_) {
+            return false;
+        }
+        fd = queued_dmabuf_.fd;
+        stride = queued_dmabuf_.stride;
+        modifier = queued_dmabuf_.modifier;
+        w = queued_dmabuf_.width;
+        h = queued_dmabuf_.height;
+        dmabuf_pending_ = false;
+        queued_dmabuf_.fd = -1;
+    }
+
+    if (fd < 0) {
+        return false;
+    }
+
+    EGLDisplay display = ctx_->display();
+
+    // Destroy previous EGLImage if exists
+    if (egl_image_) {
+        eglDestroyImageKHR(display, static_cast<EGLImageKHR>(egl_image_));
+        egl_image_ = nullptr;
+    }
+
+    // Create dmabuf texture if needed
+    if (!dmabuf_texture_) {
+        glGenTextures(1, &dmabuf_texture_);
+        glBindTexture(GL_TEXTURE_2D, dmabuf_texture_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // Create EGLImage from dmabuf
+    // CEF uses DRM_FORMAT_ARGB8888 - EGL import handles format conversion
+    // DRM_FORMAT_MOD_INVALID means no modifier - don't include modifier attrs
+    EGLImageKHR image;
+    if (modifier == DRM_FORMAT_MOD_INVALID) {
+        EGLint attrs[] = {
+            EGL_WIDTH, w,
+            EGL_HEIGHT, h,
+            EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ARGB8888,
+            EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, static_cast<EGLint>(stride),
+            EGL_NONE
+        };
+        image = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
+    } else {
+        EGLint attrs[] = {
+            EGL_WIDTH, w,
+            EGL_HEIGHT, h,
+            EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ARGB8888,
+            EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, static_cast<EGLint>(stride),
+            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, static_cast<EGLint>(modifier & 0xFFFFFFFF),
+            EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, static_cast<EGLint>(modifier >> 32),
+            EGL_NONE
+        };
+        image = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
+    }
+
+    // Close the fd after creating the EGLImage (EGL keeps its own reference)
+    close(fd);
+
+    if (!image) {
+        EGLint err = eglGetError();
+        LOG_ERROR(LOG_COMPOSITOR, "eglCreateImageKHR failed: 0x%x", err);
+        return false;
+    }
+    egl_image_ = image;
+
+    // Bind to texture
+    glBindTexture(GL_TEXTURE_2D, dmabuf_texture_);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+
+    GLenum glErr = glGetError();
+    if (glErr != GL_NO_ERROR) {
+        LOG_ERROR(LOG_COMPOSITOR, "glEGLImageTargetTexture2DOES failed: 0x%x", glErr);
+        eglDestroyImageKHR(display, image);
+        egl_image_ = nullptr;
+        return false;
+    }
+
+    dmabuf_width_ = w;
+    dmabuf_height_ = h;
+    use_dmabuf_ = true;
+    has_content_ = true;
+
+    static bool first = true;
+    if (first) {
+        LOG_INFO(LOG_COMPOSITOR, "dmabuf imported: %dx%d stride=%u modifier=0x%lx",
+                 w, h, stride, modifier);
+        first = false;
+    }
+
+    return true;
+#else
+    return false;
+#endif
+}
+
 void OpenGLCompositor::composite(uint32_t width, uint32_t height, float alpha) {
     if (!has_content_ || !program_) {
         return;
@@ -348,7 +518,20 @@ void OpenGLCompositor::composite(uint32_t width, uint32_t height, float alpha) {
     glUniform1f(alpha_loc_, alpha);
 
     glActiveTexture(GL_TEXTURE0);
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // Use dmabuf texture if available, otherwise fallback to PBO texture
+    if (use_dmabuf_ && dmabuf_texture_) {
+        glBindTexture(GL_TEXTURE_2D, dmabuf_texture_);
+        // dmabuf import handles format - no swizzle needed
+        if (swizzle_loc_ >= 0) glUniform1f(swizzle_loc_, 0.0f);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, texture_);
+        // PBO path uploads BGRA as GL_RGBA - need swizzle
+        if (swizzle_loc_ >= 0) glUniform1f(swizzle_loc_, 1.0f);
+    }
+#else
     glBindTexture(GL_TEXTURE_2D, texture_);
+#endif
 
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -393,6 +576,21 @@ void OpenGLCompositor::destroyTexture() {
         glDeleteTextures(1, &texture_);
         texture_ = 0;
     }
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // Clean up dmabuf resources
+    if (egl_image_ && ctx_ && eglDestroyImageKHR) {
+        eglDestroyImageKHR(ctx_->display(), static_cast<EGLImageKHR>(egl_image_));
+        egl_image_ = nullptr;
+    }
+    if (dmabuf_texture_) {
+        glDeleteTextures(1, &dmabuf_texture_);
+        dmabuf_texture_ = 0;
+    }
+    use_dmabuf_ = false;
+    dmabuf_width_ = 0;
+    dmabuf_height_ = 0;
+#endif
 }
 
 void OpenGLCompositor::cleanup() {

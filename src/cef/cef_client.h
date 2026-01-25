@@ -45,12 +45,17 @@ using FullscreenChangeCallback = std::function<void(bool fullscreen)>;
 // Physical pixel size callback (returns actual framebuffer dimensions)
 using PhysicalSizeCallback = std::function<void(int& width, int& height)>;
 
+// Accelerated paint callback (dmabuf on Linux)
+// fd: dmabuf file descriptor, stride/offset/size: plane info, modifier: for EGL
+using AcceleratedPaintCallback = std::function<void(int fd, uint32_t stride, uint64_t modifier,
+                                                     int width, int height)>;
+
 class Client : public CefClient, public CefRenderHandler, public CefLifeSpanHandler, public CefDisplayHandler, public CefLoadHandler, public CefContextMenuHandler, public InputReceiver {
 public:
     using PaintCallback = std::function<void(const void* buffer, int width, int height)>;
 
     Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg = nullptr,
-           void* unused = nullptr, MenuOverlay* menu = nullptr,
+           AcceleratedPaintCallback on_accel_paint = nullptr, MenuOverlay* menu = nullptr,
            CursorChangeCallback on_cursor_change = nullptr,
            FullscreenChangeCallback on_fullscreen_change = nullptr,
            PhysicalSizeCallback physical_size_cb = nullptr);
@@ -87,6 +92,9 @@ public:
     void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                  const RectList& dirtyRects, const void* buffer,
                  int width, int height) override;
+    void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
+                            const RectList& dirtyRects,
+                            const CefAcceleratedPaintInfo& info) override;
 
     // CefLifeSpanHandler
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -147,6 +155,7 @@ private:
     int height_;
     PaintCallback on_paint_;
     PlayerMessageCallback on_player_msg_;
+    AcceleratedPaintCallback on_accel_paint_;
     MenuOverlay* menu_ = nullptr;
     CursorChangeCallback on_cursor_change_;
     FullscreenChangeCallback on_fullscreen_change_;
@@ -172,7 +181,8 @@ public:
     using LoadServerCallback = std::function<void(const std::string& url)>;
 
     OverlayClient(int width, int height, PaintCallback on_paint, LoadServerCallback on_load_server,
-                  PhysicalSizeCallback physical_size_cb = nullptr);
+                  PhysicalSizeCallback physical_size_cb = nullptr,
+                  AcceleratedPaintCallback on_accel_paint = nullptr);
 
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
@@ -195,6 +205,9 @@ public:
     void OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                  const RectList& dirtyRects, const void* buffer,
                  int width, int height) override;
+    void OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
+                            const RectList& dirtyRects,
+                            const CefAcceleratedPaintInfo& info) override;
 
     // CefLifeSpanHandler
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -225,6 +238,7 @@ private:
     PaintCallback on_paint_;
     LoadServerCallback on_load_server_;
     PhysicalSizeCallback physical_size_cb_;
+    AcceleratedPaintCallback on_accel_paint_;
     float scale_override_ = 0.0f;
     std::atomic<bool> is_closed_ = false;
     CefRefPtr<CefBrowser> browser_;

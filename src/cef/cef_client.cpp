@@ -203,11 +203,12 @@ private:
 };
 
 Client::Client(int width, int height, PaintCallback on_paint, PlayerMessageCallback on_player_msg,
-               void* /*unused*/, MenuOverlay* menu,
+               AcceleratedPaintCallback on_accel_paint, MenuOverlay* menu,
                CursorChangeCallback on_cursor_change, FullscreenChangeCallback on_fullscreen_change,
                PhysicalSizeCallback physical_size_cb)
     : width_(width), height_(height), on_paint_(std::move(on_paint)),
       on_player_msg_(std::move(on_player_msg)),
+      on_accel_paint_(std::move(on_accel_paint)),
       menu_(menu), on_cursor_change_(std::move(on_cursor_change)),
       on_fullscreen_change_(std::move(on_fullscreen_change)),
       physical_size_cb_(std::move(physical_size_cb)) {}
@@ -458,6 +459,40 @@ void Client::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
         }
     }
     on_paint_(composite_buffer_.data(), width, height);
+}
+
+void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
+                                 const RectList& dirtyRects,
+                                 const CefAcceleratedPaintInfo& info) {
+    static bool first = true;
+    if (first) {
+        LOG_INFO(LOG_CEF, "OnAcceleratedPaint: planes=%d modifier=0x%lx format=%d",
+                 info.plane_count, info.modifier, info.format);
+        if (info.plane_count > 0) {
+            LOG_INFO(LOG_CEF, "  plane[0]: fd=%d stride=%u offset=%lu size=%lu",
+                     info.planes[0].fd, info.planes[0].stride,
+                     info.planes[0].offset, info.planes[0].size);
+        }
+        first = false;
+    }
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // Import dmabuf for zero-copy rendering
+    if (on_accel_paint_ && type == PET_VIEW && info.plane_count > 0) {
+        // Get physical dimensions for the texture size
+        int physical_w = 0, physical_h = 0;
+        if (physical_size_cb_) {
+            physical_size_cb_(physical_w, physical_h);
+        }
+        if (physical_w > 0 && physical_h > 0) {
+            // Dup the fd since CEF may close it after this callback
+            int fd = dup(info.planes[0].fd);
+            if (fd >= 0) {
+                on_accel_paint_(fd, info.planes[0].stride, info.modifier, physical_w, physical_h);
+            }
+        }
+    }
+#endif
 }
 
 void Client::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
@@ -725,10 +760,11 @@ bool Client::RunContextMenu(CefRefPtr<CefBrowser> browser,
 
 // OverlayClient implementation
 OverlayClient::OverlayClient(int width, int height, PaintCallback on_paint, LoadServerCallback on_load_server,
-                             PhysicalSizeCallback physical_size_cb)
+                             PhysicalSizeCallback physical_size_cb, AcceleratedPaintCallback on_accel_paint)
     : width_(width), height_(height), on_paint_(std::move(on_paint)),
       on_load_server_(std::move(on_load_server)),
-      physical_size_cb_(std::move(physical_size_cb)) {}
+      physical_size_cb_(std::move(physical_size_cb)),
+      on_accel_paint_(std::move(on_accel_paint)) {}
 
 bool OverlayClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                                       cef_log_severity_t level,
@@ -844,6 +880,33 @@ void OverlayClient::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type
     if (on_paint_ && type == PET_VIEW) {
         on_paint_(buffer, width, height);
     }
+}
+
+void OverlayClient::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
+                                        const RectList& dirtyRects,
+                                        const CefAcceleratedPaintInfo& info) {
+    static bool first = true;
+    if (first) {
+        LOG_INFO(LOG_CEF, "Overlay OnAcceleratedPaint: planes=%d modifier=0x%lx format=%d",
+                 info.plane_count, info.modifier, info.format);
+        first = false;
+    }
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // Import dmabuf for zero-copy rendering
+    if (on_accel_paint_ && type == PET_VIEW && info.plane_count > 0) {
+        int physical_w = 0, physical_h = 0;
+        if (physical_size_cb_) {
+            physical_size_cb_(physical_w, physical_h);
+        }
+        if (physical_w > 0 && physical_h > 0) {
+            int fd = dup(info.planes[0].fd);
+            if (fd >= 0) {
+                on_accel_paint_(fd, info.planes[0].stride, info.modifier, physical_w, physical_h);
+            }
+        }
+    }
+#endif
 }
 
 void OverlayClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {

@@ -50,6 +50,7 @@ void activateMacWindow(SDL_Window* window);
 #include "compositor/opengl_compositor.h"
 #include "player/mpv/mpv_player_vk.h"
 #include "player/mpv/mpv_player_gl.h"
+#include <unistd.h>  // For close()
 #endif
 #include "cef/cef_app.h"
 #include "cef/cef_client.h"
@@ -852,7 +853,15 @@ int main(int argc, char* argv[]) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
             pending_server_url = url;
         },
-        getPhysicalSize
+        getPhysicalSize,
+#if !defined(__APPLE__) && !defined(_WIN32)
+        // Accelerated paint callback for overlay
+        [&](int fd, uint32_t stride, uint64_t modifier, int w, int h) {
+            overlay_compositor.queueDmabuf(fd, stride, modifier, w, h);
+        }
+#else
+        nullptr
+#endif
     ));
 
     // Track who initiated fullscreen (only changes from NONE, returns to NONE on exit)
@@ -891,7 +900,14 @@ int main(int argc, char* argv[]) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
             pending_cmds.push_back({cmd, arg, intArg, 0.0, metadata});
         },
-        nullptr,  // No GPU accelerated paint
+#if !defined(__APPLE__) && !defined(_WIN32)
+        // Accelerated paint callback - queue dmabuf for import on main thread
+        [&](int fd, uint32_t stride, uint64_t modifier, int w, int h) {
+            compositor.queueDmabuf(fd, stride, modifier, w, h);
+        },
+#else
+        nullptr,  // No GPU accelerated paint on macOS/Windows
+#endif
         &menu,
         [&](cef_cursor_type_t type) {
             SDL_SystemCursor sdl_type = cefCursorToSDL(type);
@@ -924,6 +940,7 @@ int main(int argc, char* argv[]) {
 
     CefWindowInfo window_info;
     window_info.SetAsWindowless(0);
+    window_info.shared_texture_enabled = true;
 
     CefBrowserSettings browser_settings;
     browser_settings.background_color = 0;
@@ -942,6 +959,7 @@ int main(int argc, char* argv[]) {
     // Create overlay browser loading index.html
     CefWindowInfo overlay_window_info;
     overlay_window_info.SetAsWindowless(0);
+    overlay_window_info.shared_texture_enabled = true;
     CefBrowserSettings overlay_browser_settings;
     overlay_browser_settings.background_color = 0;
     overlay_browser_settings.windowless_frame_rate = browser_settings.windowless_frame_rate;
@@ -1723,6 +1741,7 @@ int main(int argc, char* argv[]) {
             }
 
             flushPaintBuffer();
+            compositor.importQueuedDmabuf();
             compositor.flushOverlay();
 
             // Clear main surface (transparent when video ready, bg color otherwise)
@@ -1733,6 +1752,7 @@ int main(int argc, char* argv[]) {
         } else {
             // X11: OpenGL composition (like Windows) - render video and CEF to same surface
             flushPaintBuffer();
+            compositor.importQueuedDmabuf();
             compositor.flushOverlay();
 
             // Clear to background color
@@ -1755,6 +1775,7 @@ int main(int argc, char* argv[]) {
 
         // Composite overlay browser (with fade alpha)
         if (overlay_state != OverlayState::HIDDEN && overlay_browser_alpha > 0.01f) {
+            overlay_compositor.importQueuedDmabuf();
             overlay_compositor.flushOverlay();
             if (overlay_compositor.hasValidOverlay()) {
                 overlay_compositor.composite(viewport_w, viewport_h, overlay_browser_alpha);

@@ -46,10 +46,6 @@ void App::OnBeforeCommandLineProcessing(const CefString& process_type,
     command_line->AppendSwitch("single-process");
 #endif
 
-    // Disable GPU rendering - software rendering is more stable for UI overlays
-    command_line->AppendSwitch("disable-gpu");
-    command_line->AppendSwitch("disable-gpu-compositing");
-
 #if !defined(__APPLE__) && !defined(_WIN32)
     // Force X11 mode on Linux - Wayland OSR has scaling issues
     command_line->AppendSwitchWithValue("ozone-platform", "x11");
