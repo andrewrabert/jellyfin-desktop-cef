@@ -235,55 +235,73 @@ MediaMetadata parseMetadataJson(const std::string& json) {
 }
 
 int main(int argc, char* argv[]) {
-    // Handle --help/--version before any logging
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("Usage: jellyfin-desktop-cef [options]\n"
-                   "\nOptions:\n"
-                   "  -h, --help              Show this help message\n"
-                   "  -v, --version           Show version information\n"
-                   "  --log-level <level>     Set log level (verbose|debug|info|warn|error)\n"
-                   "  --log-file <path>       Write logs to file (with timestamps)\n"
-                   "  --video <file>          Load video file on startup\n");
-            return 0;
-        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            if (APP_GIT_HASH[0]) {
-                printf("jellyfin-desktop-cef %s (%s)\n", APP_VERSION, APP_GIT_HASH);
-            } else {
-                printf("jellyfin-desktop-cef %s\n", APP_VERSION);
-            }
-            printf("  built " __DATE__ " " __TIME__ "\n");
-            printf("CEF %s\n", CEF_VERSION);
-            return 0;
-        }
-    }
+    // CEF subprocesses inherit this env var - skip our arg parsing entirely
+    bool is_cef_subprocess = (getenv("JELLYFIN_CEF_SUBPROCESS") != nullptr);
 
-    // Pre-parse logging args before anything else (so early logs work)
-    {
-        SDL_LogPriority log_level = SDL_LOG_PRIORITY_INFO;
+    // Parse arguments (main process only)
+    SDL_LogPriority log_level = SDL_LOG_PRIORITY_INFO;
+    if (!is_cef_subprocess) {
+        const char* log_level_str = nullptr;
+        const char* log_file_path = nullptr;
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
-                int level = parseLogLevel(argv[++i]);
-                if (level >= 0) log_level = static_cast<SDL_LogPriority>(level);
+            if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                printf("Usage: jellyfin-desktop-cef [options]\n"
+                       "\nOptions:\n"
+                       "  -h, --help              Show this help message\n"
+                       "  -v, --version           Show version information\n"
+                       "  --log-level <level>     Set log level (verbose|debug|info|warn|error)\n"
+                       "  --log-file <path>       Write logs to file (with timestamps)\n");
+                return 0;
+            } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+                if (APP_GIT_HASH[0]) {
+                    printf("jellyfin-desktop-cef %s (%s)\n", APP_VERSION, APP_GIT_HASH);
+                } else {
+                    printf("jellyfin-desktop-cef %s\n", APP_VERSION);
+                }
+                printf("  built " __DATE__ " " __TIME__ "\n");
+                printf("CEF %s\n", CEF_VERSION);
+                return 0;
+            } else if (strcmp(argv[i], "--log-level") == 0) {
+                log_level_str = (i + 1 < argc && argv[i+1][0] != '-') ? argv[++i] : "";
             } else if (strncmp(argv[i], "--log-level=", 12) == 0) {
-                int level = parseLogLevel(argv[i] + 12);
-                if (level >= 0) log_level = static_cast<SDL_LogPriority>(level);
-            } else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
-                g_log_file = fopen(argv[++i], "a");
+                log_level_str = argv[i] + 12;
+            } else if (strcmp(argv[i], "--log-file") == 0) {
+                log_file_path = (i + 1 < argc && argv[i+1][0] != '-') ? argv[++i] : "";
             } else if (strncmp(argv[i], "--log-file=", 11) == 0) {
-                g_log_file = fopen(argv[i] + 11, "a");
+                log_file_path = argv[i] + 11;
+            } else if (argv[i][0] == '-') {
+                fprintf(stderr, "Unknown option: %s\n", argv[i]);
+                return 1;
             }
         }
-        initLogging(log_level);
-    }
 
-    // Startup banner
-    if (APP_GIT_HASH[0]) {
-        LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s (%s) built " __DATE__ " " __TIME__, APP_VERSION, APP_GIT_HASH);
-    } else {
-        LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s built " __DATE__ " " __TIME__, APP_VERSION);
+        // Validate and apply options (empty = use default/no-op)
+        if (log_level_str && log_level_str[0]) {
+            int level = parseLogLevel(log_level_str);
+            if (level < 0) {
+                fprintf(stderr, "Invalid log level: %s\n", log_level_str);
+                return 1;
+            }
+            log_level = static_cast<SDL_LogPriority>(level);
+        }
+        if (log_file_path && log_file_path[0]) {
+            g_log_file = fopen(log_file_path, "a");
+            if (!g_log_file) {
+                fprintf(stderr, "Failed to open log file: %s\n", log_file_path);
+                return 1;
+            }
+        }
+
+        initLogging(log_level);
+
+        // Startup banner
+        if (APP_GIT_HASH[0]) {
+            LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s (%s) built " __DATE__ " " __TIME__, APP_VERSION, APP_GIT_HASH);
+        } else {
+            LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s built " __DATE__ " " __TIME__, APP_VERSION);
+        }
+        LOG_INFO(LOG_MAIN, "CEF " CEF_VERSION);
     }
-    LOG_INFO(LOG_MAIN, "CEF " CEF_VERSION);
 
 #ifdef __APPLE__
     // macOS: Get executable path early for CEF framework loading
@@ -321,53 +339,8 @@ int main(int argc, char* argv[]) {
     initMacApplication();
 #endif
 
-    // CEF subprocesses inherit this env var - skip our arg parsing
-    bool is_cef_subprocess = (getenv("JELLYFIN_CEF_SUBPROCESS") != nullptr);
-
-    // Parse CLI args (main process only)
-    // Note: --log-level and --log-file are pre-parsed above for early logging
-    std::string test_video;
+    // Mark so CEF subprocesses skip arg parsing
     if (!is_cef_subprocess) {
-        for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
-                if (parseLogLevel(argv[++i]) < 0) {
-                    fprintf(stderr, "Invalid log level: %s\n", argv[i]);
-                    return 1;
-                }
-            } else if (strncmp(argv[i], "--log-level=", 12) == 0) {
-                if (parseLogLevel(argv[i] + 12) < 0) {
-                    fprintf(stderr, "Invalid log level: %s\n", argv[i] + 12);
-                    return 1;
-                }
-            } else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
-                const char* path = argv[++i];
-                if (!g_log_file) {  // Not already opened by pre-parse
-                    g_log_file = fopen(path, "a");
-                    if (!g_log_file) {
-                        fprintf(stderr, "Failed to open log file: %s\n", path);
-                        return 1;
-                    }
-                }
-            } else if (strncmp(argv[i], "--log-file=", 11) == 0) {
-                const char* path = argv[i] + 11;
-                if (!g_log_file) {
-                    g_log_file = fopen(path, "a");
-                    if (!g_log_file) {
-                        fprintf(stderr, "Failed to open log file: %s\n", path);
-                        return 1;
-                    }
-                }
-            } else if (strcmp(argv[i], "--video") == 0 && i + 1 < argc) {
-                test_video = argv[++i];
-            } else if (strncmp(argv[i], "--video=", 8) == 0) {
-                test_video = argv[i] + 8;
-            } else if (argv[i][0] == '-') {
-                fprintf(stderr, "Unknown option: %s\n", argv[i]);
-                return 1;
-            }
-        }
-
-        // Mark so CEF subprocesses skip arg parsing
 #ifdef _WIN32
         _putenv_s("JELLYFIN_CEF_SUBPROCESS", "1");
 #else
@@ -1168,28 +1141,6 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    // Auto-load test video if provided via --video
-    if (!test_video.empty()) {
-        LOG_INFO(LOG_TEST, "Loading video: %s", test_video.c_str());
-        if (mpvLoadFile(test_video)) {
-            has_video = true;
-#ifdef __APPLE__
-            if (has_subsurface && videoLayer.isHdr()) {
-                // macOS EDR is automatic
-            }
-#elif defined(_WIN32)
-            // Windows HDR is automatic via DXGI colorspace
-#else
-            if (has_subsurface && is_hdr && useWayland) {
-                waylandSubsurface.setColorspace();
-            }
-#endif
-            client->emitPlaying();
-        } else {
-            LOG_ERROR(LOG_TEST, "Failed to load: %s", test_video.c_str());
-        }
-    }
-
 #ifdef __APPLE__
     // Live resize support - event watcher is called during modal resize loop
     struct LiveResizeContext {
@@ -1709,7 +1660,7 @@ int main(int argc, char* argv[]) {
 
         // Composite main browser (Metal handles its own presentation)
         // Always call composite() - it handles "no content yet" internally and uploads staging data
-        if (test_video.empty() && (compositor.hasValidOverlay() || compositor.hasPendingContent())) {
+        if (compositor.hasValidOverlay() || compositor.hasPendingContent()) {
             compositor.composite(current_width, current_height, 1.0f);
         }
 
@@ -1736,7 +1687,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Composite main browser on top of video
-        if (test_video.empty() && compositor.hasValidOverlay()) {
+        if (compositor.hasValidOverlay()) {
             compositor.composite(current_width, current_height, 1.0f);
         }
 
@@ -1799,7 +1750,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Composite main browser (always full opacity when no video)
-        if (test_video.empty() && compositor.hasValidOverlay()) {
+        if (compositor.hasValidOverlay()) {
             compositor.composite(viewport_w, viewport_h, 1.0f);
         }
 

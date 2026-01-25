@@ -5,14 +5,6 @@
 #include "include/cef_v8.h"
 #include <SDL3/SDL.h>
 #include <atomic>
-#include <string>
-
-// Custom SDL event for video playback
-// Use SDL_RegisterEvents to get the event type at runtime
-extern Uint32 SDL_PLAYVIDEO_EVENT;
-
-// Store the URL to play (set by V8 handler, read by main loop)
-extern std::string g_pending_video_url;
 
 class App : public CefApp,
             public CefBrowserProcessHandler,

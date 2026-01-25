@@ -32,7 +32,3 @@ sudo xattr -cr /Applications/Jellyfin\ Desktop\ CEF.app
 
 See [dev/](dev/README.md) for build instructions.
 
-## Options
-
-- `--video <path>` - Load video directly (for testing)
-- `--remote-debugging-port=<port>` - Enable Chrome DevTools
