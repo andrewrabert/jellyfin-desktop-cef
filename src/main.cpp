@@ -14,6 +14,7 @@
 #include <atomic>
 
 #include "include/cef_app.h"
+#include "include/cef_version.h"
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
 #ifdef __APPLE__
@@ -234,6 +235,29 @@ MediaMetadata parseMetadataJson(const std::string& json) {
 }
 
 int main(int argc, char* argv[]) {
+    // Handle --help/--version before any logging
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("Usage: jellyfin-desktop-cef [options]\n"
+                   "\nOptions:\n"
+                   "  -h, --help              Show this help message\n"
+                   "  -v, --version           Show version information\n"
+                   "  --log-level <level>     Set log level (verbose|debug|info|warn|error)\n"
+                   "  --log-file <path>       Write logs to file (with timestamps)\n"
+                   "  --video <file>          Load video file on startup\n");
+            return 0;
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+            if (APP_GIT_HASH[0]) {
+                printf("jellyfin-desktop-cef %s (%s)\n", APP_VERSION, APP_GIT_HASH);
+            } else {
+                printf("jellyfin-desktop-cef %s\n", APP_VERSION);
+            }
+            printf("  built " __DATE__ " " __TIME__ "\n");
+            printf("CEF %s\n", CEF_VERSION);
+            return 0;
+        }
+    }
+
     // Pre-parse logging args before anything else (so early logs work)
     {
         SDL_LogPriority log_level = SDL_LOG_PRIORITY_INFO;
@@ -259,6 +283,7 @@ int main(int argc, char* argv[]) {
     } else {
         LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s built " __DATE__ " " __TIME__, APP_VERSION);
     }
+    LOG_INFO(LOG_MAIN, "CEF " CEF_VERSION);
 
 #ifdef __APPLE__
     // macOS: Get executable path early for CEF framework loading
@@ -304,15 +329,7 @@ int main(int argc, char* argv[]) {
     std::string test_video;
     if (!is_cef_subprocess) {
         for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-                printf("Usage: jellyfin-desktop [options]\n"
-                       "\nOptions:\n"
-                       "  -h, --help              Show this help message\n"
-                       "  --log-level <level>     Set log level (verbose|debug|info|warn|error)\n"
-                       "  --log-file <path>       Write logs to file (with timestamps)\n"
-                       "  --video <file>          Load video file on startup\n");
-                return 0;
-            } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
+            if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
                 if (parseLogLevel(argv[++i]) < 0) {
                     fprintf(stderr, "Invalid log level: %s\n", argv[i]);
                     return 1;
