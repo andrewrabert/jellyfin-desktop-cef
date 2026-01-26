@@ -473,16 +473,14 @@ void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType 
 #if !defined(__APPLE__) && !defined(_WIN32)
     // Import dmabuf for zero-copy rendering
     if (on_accel_paint_ && type == PET_VIEW && info.plane_count > 0) {
-        // Get physical dimensions for the texture size
-        int physical_w = 0, physical_h = 0;
-        if (physical_size_cb_) {
-            physical_size_cb_(physical_w, physical_h);
-        }
-        if (physical_w > 0 && physical_h > 0) {
+        // Use CEF's actual dmabuf dimensions, not window size
+        int w = info.extra.coded_size.width;
+        int h = info.extra.coded_size.height;
+        if (w > 0 && h > 0) {
             // Dup the fd since CEF may close it after this callback
             int fd = dup(info.planes[0].fd);
             if (fd >= 0) {
-                on_accel_paint_(fd, info.planes[0].stride, info.modifier, physical_w, physical_h);
+                on_accel_paint_(fd, info.planes[0].stride, info.modifier, w, h);
             }
         }
     }
@@ -890,14 +888,13 @@ void OverlayClient::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintEleme
 #if !defined(__APPLE__) && !defined(_WIN32)
     // Import dmabuf for zero-copy rendering
     if (on_accel_paint_ && type == PET_VIEW && info.plane_count > 0) {
-        int physical_w = 0, physical_h = 0;
-        if (physical_size_cb_) {
-            physical_size_cb_(physical_w, physical_h);
-        }
-        if (physical_w > 0 && physical_h > 0) {
+        // Use CEF's actual dmabuf dimensions, not window size
+        int w = info.extra.coded_size.width;
+        int h = info.extra.coded_size.height;
+        if (w > 0 && h > 0) {
             int fd = dup(info.planes[0].fd);
             if (fd >= 0) {
-                on_accel_paint_(fd, info.planes[0].stride, info.modifier, physical_w, physical_h);
+                on_accel_paint_(fd, info.planes[0].stride, info.modifier, w, h);
             }
         }
     }

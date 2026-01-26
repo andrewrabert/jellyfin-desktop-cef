@@ -155,7 +155,11 @@ void main() {
     }
 
     vec4 color = texelFetch(overlayTex, ivec2(px, tex_y), 0);
-    fragColor = color.bgra * alpha;
+    // Software path provides BGRA, dmabuf provides RGBA (driver converts)
+    if (swizzleBgra > 0.5) {
+        color = color.bgra;
+    }
+    fragColor = color * alpha;
 }
 )";
 #endif
@@ -560,6 +564,7 @@ bool OpenGLCompositor::importQueuedDmabuf() {
     dmabuf_height_ = h;
     use_dmabuf_ = true;
     has_content_ = true;
+    texture_valid_ = true;
 
     static bool first = true;
     if (first) {
