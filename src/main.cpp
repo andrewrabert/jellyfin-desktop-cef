@@ -983,12 +983,14 @@ int main(int argc, char* argv[]) {
 
     CefWindowInfo window_info;
     window_info.SetAsWindowless(0);
-#if !defined(__APPLE__) && !defined(_WIN32)
-    window_info.shared_texture_enabled = use_dmabuf;
-#else
+#ifdef __APPLE__
+    window_info.shared_texture_enabled = false;  // macOS: use OnPaint (IOSurface not implemented)
+#elif defined(_WIN32)
     window_info.shared_texture_enabled = true;
-    (void)use_dmabuf;  // Suppress unused variable warning
+#else
+    window_info.shared_texture_enabled = use_dmabuf;  // Linux: dmabuf zero-copy
 #endif
+    (void)use_dmabuf;
 
     CefBrowserSettings browser_settings;
     browser_settings.background_color = 0;
@@ -1007,10 +1009,12 @@ int main(int argc, char* argv[]) {
     // Create overlay browser loading index.html
     CefWindowInfo overlay_window_info;
     overlay_window_info.SetAsWindowless(0);
-#if !defined(__APPLE__) && !defined(_WIN32)
-    overlay_window_info.shared_texture_enabled = use_dmabuf;
-#else
+#ifdef __APPLE__
+    overlay_window_info.shared_texture_enabled = false;  // macOS: use OnPaint
+#elif defined(_WIN32)
     overlay_window_info.shared_texture_enabled = true;
+#else
+    overlay_window_info.shared_texture_enabled = use_dmabuf;  // Linux: dmabuf zero-copy
 #endif
     CefBrowserSettings overlay_browser_settings;
     overlay_browser_settings.background_color = 0;
