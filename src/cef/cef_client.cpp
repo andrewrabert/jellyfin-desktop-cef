@@ -458,6 +458,7 @@ void Client::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
 void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                                  const RectList& dirtyRects,
                                  const CefAcceleratedPaintInfo& info) {
+#if !defined(__APPLE__) && !defined(_WIN32)
     static bool first = true;
     if (first) {
         LOG_INFO(LOG_CEF, "OnAcceleratedPaint: planes=%d modifier=0x%lx format=%d",
@@ -470,7 +471,6 @@ void Client::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType 
         first = false;
     }
 
-#if !defined(__APPLE__) && !defined(_WIN32)
     // Import dmabuf for zero-copy rendering
     if (on_accel_paint_ && type == PET_VIEW && info.plane_count > 0) {
         // Use CEF's actual dmabuf dimensions, not window size
@@ -878,6 +878,7 @@ void OverlayClient::OnPaint(CefRefPtr<CefBrowser> browser, PaintElementType type
 void OverlayClient::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintElementType type,
                                         const RectList& dirtyRects,
                                         const CefAcceleratedPaintInfo& info) {
+#if !defined(__APPLE__) && !defined(_WIN32)
     static bool first = true;
     if (first) {
         LOG_INFO(LOG_CEF, "Overlay OnAcceleratedPaint: planes=%d modifier=0x%lx format=%d",
@@ -885,7 +886,6 @@ void OverlayClient::OnAcceleratedPaint(CefRefPtr<CefBrowser> browser, PaintEleme
         first = false;
     }
 
-#if !defined(__APPLE__) && !defined(_WIN32)
     // Import dmabuf for zero-copy rendering
     if (on_accel_paint_ && type == PET_VIEW && info.plane_count > 0) {
         // Use CEF's actual dmabuf dimensions, not window size

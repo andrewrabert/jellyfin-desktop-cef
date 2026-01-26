@@ -44,6 +44,8 @@ static PFNGLDELETEPROGRAMPROC glDeleteProgram = nullptr;
 static PFNGLUSEPROGRAMPROC glUseProgram = nullptr;
 static PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation = nullptr;
 static PFNGLUNIFORM1FPROC glUniform1f = nullptr;
+static PFNGLUNIFORM2FPROC glUniform2f = nullptr;
+static PFNGLUNIFORM1IPROC glUniform1i = nullptr;
 static PFNGLACTIVETEXTUREPROC glActiveTexture = nullptr;
 
 static bool s_wglExtensionsLoaded = false;
@@ -74,6 +76,8 @@ static void loadWGLExtensions() {
     glUseProgram = (PFNGLUSEPROGRAMPROC)wglGetProcAddress("glUseProgram");
     glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)wglGetProcAddress("glGetUniformLocation");
     glUniform1f = (PFNGLUNIFORM1FPROC)wglGetProcAddress("glUniform1f");
+    glUniform2f = (PFNGLUNIFORM2FPROC)wglGetProcAddress("glUniform2f");
+    glUniform1i = (PFNGLUNIFORM1IPROC)wglGetProcAddress("glUniform1i");
     glActiveTexture = (PFNGLACTIVETEXTUREPROC)wglGetProcAddress("glActiveTexture");
     s_wglExtensionsLoaded = true;
 }

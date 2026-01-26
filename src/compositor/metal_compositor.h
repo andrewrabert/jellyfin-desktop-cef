@@ -24,6 +24,9 @@ public:
     // Update overlay from CEF paint callback
     void updateOverlay(const void* data, int width, int height);
 
+    // Update overlay with arbitrary size (recreates texture if needed)
+    void updateOverlayPartial(const void* data, int src_width, int src_height);
+
     // Get staging buffer for direct copy
     void* getStagingBuffer(int width, int height);
     void markStagingDirty();
@@ -39,6 +42,9 @@ public:
 
     bool hasValidOverlay() const { return has_content_; }
     bool hasPendingContent() const { return staging_dirty_; }
+
+    uint32_t width() const { return width_; }
+    uint32_t height() const { return height_; }
 
     // For video layer to position itself
     NSWindow* parentWindow() const { return parent_window_; }

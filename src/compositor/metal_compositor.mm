@@ -238,6 +238,23 @@ void MetalCompositor::updateOverlay(const void* data, int width, int height) {
     staging_dirty_ = true;
 }
 
+void MetalCompositor::updateOverlayPartial(const void* data, int src_width, int src_height) {
+    if (!data || src_width <= 0 || src_height <= 0) {
+        return;
+    }
+
+    // Resize if dimensions don't match
+    if (src_width != (int)width_ || src_height != (int)height_) {
+        resize(src_width, src_height);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (staging_buffer_) {
+        memcpy(staging_buffer_, data, src_width * src_height * 4);
+        staging_dirty_ = true;
+    }
+}
+
 void* MetalCompositor::getStagingBuffer(int width, int height) {
     static bool first_call = true;
     if (first_call) {
