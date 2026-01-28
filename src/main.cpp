@@ -390,6 +390,12 @@ int main(int argc, char* argv[]) {
         SDL_PushEvent(&event);
     };
 
+#ifdef __APPLE__
+    // macOS: CEF uses external_message_pump, so we need to wake the main loop
+    // when CEF schedules work (otherwise SDL_WaitEvent blocks indefinitely)
+    App::SetWakeCallback(wakeMainLoop);
+#endif
+
     const int width = 1280;
     const int height = 720;
 

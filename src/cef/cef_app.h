@@ -5,6 +5,7 @@
 #include "include/cef_v8.h"
 #include <SDL3/SDL.h>
 #include <atomic>
+#include <functional>
 
 class App : public CefApp,
             public CefBrowserProcessHandler,
@@ -14,6 +15,10 @@ public:
 
     // Set device scale factor before CefInitialize
     void SetDeviceScaleFactor(float scale) { device_scale_factor_ = scale; }
+
+    // Set wake callback for external_message_pump mode (macOS)
+    // Must be called before CefInitialize
+    static void SetWakeCallback(std::function<void()> callback) { wake_callback_ = std::move(callback); }
 
     // Check if CEF needs work done (for external_message_pump mode on macOS)
     static bool NeedsWork() { return cef_work_pending_.exchange(false); }
@@ -42,6 +47,7 @@ public:
 private:
     static inline std::atomic<bool> cef_work_pending_{false};
     static inline std::atomic<int64_t> cef_work_delay_ms_{0};
+    static inline std::function<void()> wake_callback_;
     float device_scale_factor_ = 1.0f;
 
     IMPLEMENT_REFCOUNTING(App);

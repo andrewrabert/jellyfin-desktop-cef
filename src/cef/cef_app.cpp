@@ -68,6 +68,10 @@ void App::OnScheduleMessagePumpWork(int64_t delay_ms) {
     // delay_ms > 0: work needed after delay
     cef_work_delay_ms_.store(delay_ms);
     cef_work_pending_.store(true);
+    // Wake the main loop from SDL_WaitEvent() so it can pump CEF
+    if (wake_callback_) {
+        wake_callback_();
+    }
 }
 
 void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
