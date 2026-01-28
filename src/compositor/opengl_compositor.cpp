@@ -401,11 +401,12 @@ void OpenGLCompositor::updateOverlayPartial(const void* data, int src_width, int
     glBindTexture(GL_TEXTURE_2D, cef_texture_);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, src_width, src_height, GL_RGBA, GL_UNSIGNED_BYTE, data);
     texture_valid_ = true;
-
-    // Force GPU to complete upload before we return - rules out async issues
-    glFinish();
-
     has_content_ = true;
+
+    // Ensure GPU finishes reading source data before returning.
+    // Without this, driver may still be reading from 'data' when caller
+    // releases buffer, causing heap corruption if buffer is resized.
+    glFinish();
 }
 
 bool OpenGLCompositor::flushOverlay() {
@@ -634,8 +635,15 @@ void OpenGLCompositor::composite(uint32_t width, uint32_t height, float alpha) {
     }
     if (tex_size_loc_ >= 0) glUniform2f(tex_size_loc_, static_cast<float>(tex_w), static_cast<float>(tex_h));
 #else
-    glBindTexture(GL_TEXTURE_2D, texture_);
-    if (tex_size_loc_ >= 0) glUniform2f(tex_size_loc_, static_cast<float>(width_), static_cast<float>(height_));
+    // Windows/macOS: prefer cef_texture_ (from updateOverlayPartial) over legacy texture_
+    if (cef_texture_) {
+        glBindTexture(GL_TEXTURE_2D, cef_texture_);
+        if (tex_size_loc_ >= 0) glUniform2f(tex_size_loc_, static_cast<float>(cef_texture_width_), static_cast<float>(cef_texture_height_));
+        if (swizzle_loc_ >= 0) glUniform1f(swizzle_loc_, 1.0f);  // BGRA swizzle for CEF
+    } else {
+        glBindTexture(GL_TEXTURE_2D, texture_);
+        if (tex_size_loc_ >= 0) glUniform2f(tex_size_loc_, static_cast<float>(width_), static_cast<float>(height_));
+    }
 #endif
 
     glBindVertexArray(vao_);

@@ -43,6 +43,8 @@ public:
     void setPosition(int x, int y);
 
     bool isHdr() const { return is_hdr_; }
+    void setColorspace() {}  // Windows HDR is automatic via DXGI colorspace
+    void setDestinationSize(int, int) {}  // no-op on Windows
 
 private:
     static LRESULT CALLBACK VideoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);

@@ -40,4 +40,6 @@ public:
     virtual int deviceExtensionCount() const = 0;
 
     virtual void setVisible(bool visible) = 0;
+    virtual void setColorspace() {}  // Platform-specific colorspace setup (default no-op)
+    virtual void setDestinationSize(int, int) {}  // HiDPI logical size (default no-op)
 };

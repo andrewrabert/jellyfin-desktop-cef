@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mpv_player.h"
 #ifdef _WIN32
 #include "context/wgl_context.h"
 using GLContext = WGLContext;
@@ -10,79 +11,65 @@ using GLContext = CGLContext;
 #include "context/egl_context.h"
 using GLContext = EGLContext_;
 #endif
-
-#include <string>
-#include <functional>
 #include <atomic>
-#include <vector>
 
 struct mpv_handle;
 struct mpv_render_context;
 
-class MpvPlayerGL {
+class MpvPlayerGL : public MpvPlayer {
 public:
-    using RedrawCallback = std::function<void()>;
-    using PositionCallback = std::function<void(double ms)>;
-    using DurationCallback = std::function<void(double ms)>;
-    using StateCallback = std::function<void(bool paused)>;
-    using PlaybackCallback = std::function<void()>;
-    using SeekCallback = std::function<void(double ms)>;
-    using BufferingCallback = std::function<void(bool buffering, double ms)>;
-    using CoreIdleCallback = std::function<void(bool idle, double ms)>;
-    struct BufferedRange { int64_t start; int64_t end; };
-    using BufferedRangesCallback = std::function<void(const std::vector<BufferedRange>&)>;
-    using ErrorCallback = std::function<void(const std::string& error)>;
 
     MpvPlayerGL();
-    ~MpvPlayerGL();
+    ~MpvPlayerGL() override;
 
     bool init(GLContext* gl);
-    void cleanup();
-    bool loadFile(const std::string& path, double startSeconds = 0.0);
+    void cleanup() override;
+    bool loadFile(const std::string& path, double startSeconds = 0.0) override;
 
-    void processEvents();
-    bool hasFrame() const;
+    void processEvents() override;
+    bool hasFrame() const override;
 
     // Render to the default framebuffer (or specified FBO)
     void render(int width, int height, int fbo = 0);
 
     // Playback control
-    void stop();
-    void pause();
-    void play();
-    void seek(double seconds);
-    void setVolume(int volume);
-    void setMuted(bool muted);
-    void setSpeed(double speed);
-    void setNormalizationGain(double gainDb);
-    void setSubtitleTrack(int sid);
-    void setAudioTrack(int aid);
-    void setAudioDelay(double seconds);
+    void stop() override;
+    void pause() override;
+    void play() override;
+    void seek(double seconds) override;
+    void setVolume(int volume) override;
+    void setMuted(bool muted) override;
+    void setSpeed(double speed) override;
+    void setNormalizationGain(double gainDb) override;
+    void setSubtitleTrack(int sid) override;
+    void setAudioTrack(int aid) override;
+    void setAudioDelay(double seconds) override;
 
     // State queries
-    double getPosition() const;
-    double getDuration() const;
-    double getSpeed() const;
-    bool isPaused() const;
-    bool isPlaying() const { return playing_; }
+    double getPosition() const override;
+    double getDuration() const override;
+    double getSpeed() const override;
+    bool isPaused() const override;
+    bool isPlaying() const override { return playing_; }
+    bool needsRedraw() const override { return needs_redraw_.load(); }
+    void clearRedrawFlag() override { needs_redraw_ = false; }
 
-    void setRedrawCallback(RedrawCallback cb) { redraw_callback_ = cb; }
-    bool needsRedraw() const { return needs_redraw_.load(); }
-    void clearRedrawFlag() { needs_redraw_ = false; }
+    void setRedrawCallback(RedrawCallback cb) override { redraw_callback_ = cb; }
 
-    void setPositionCallback(PositionCallback cb) { on_position_ = cb; }
-    void setDurationCallback(DurationCallback cb) { on_duration_ = cb; }
-    void setStateCallback(StateCallback cb) { on_state_ = cb; }
-    void setPlayingCallback(PlaybackCallback cb) { on_playing_ = cb; }
-    void setFinishedCallback(PlaybackCallback cb) { on_finished_ = cb; }
-    void setCanceledCallback(PlaybackCallback cb) { on_canceled_ = cb; }
-    void setSeekedCallback(SeekCallback cb) { on_seeked_ = cb; }
-    void setBufferingCallback(BufferingCallback cb) { on_buffering_ = cb; }
-    void setCoreIdleCallback(CoreIdleCallback cb) { on_core_idle_ = cb; }
-    void setBufferedRangesCallback(BufferedRangesCallback cb) { on_buffered_ranges_ = cb; }
-    void setErrorCallback(ErrorCallback cb) { on_error_ = cb; }
+    void setPositionCallback(PositionCallback cb) override { on_position_ = cb; }
+    void setDurationCallback(DurationCallback cb) override { on_duration_ = cb; }
+    void setStateCallback(StateCallback cb) override { on_state_ = cb; }
+    void setPlayingCallback(PlaybackCallback cb) override { on_playing_ = cb; }
+    void setFinishedCallback(PlaybackCallback cb) override { on_finished_ = cb; }
+    void setCanceledCallback(PlaybackCallback cb) override { on_canceled_ = cb; }
+    void setSeekedCallback(SeekCallback cb) override { on_seeked_ = cb; }
+    void setBufferingCallback(BufferingCallback cb) override { on_buffering_ = cb; }
+    void setCoreIdleCallback(CoreIdleCallback cb) override { on_core_idle_ = cb; }
+    void setBufferedRangesCallback(BufferedRangesCallback cb) override { on_buffered_ranges_ = cb; }
+    void setErrorCallback(ErrorCallback cb) override { on_error_ = cb; }
+    void setWakeupCallback(WakeupCallback cb) override { on_wakeup_ = cb; }
 
-    bool isHdr() const { return false; }  // OpenGL path doesn't support HDR
+    bool isHdr() const override { return false; }  // OpenGL path doesn't support HDR
 
 private:
     static void onMpvRedraw(void* ctx);
@@ -105,6 +92,7 @@ private:
     CoreIdleCallback on_core_idle_;
     BufferedRangesCallback on_buffered_ranges_;
     ErrorCallback on_error_;
+    WakeupCallback on_wakeup_;
 
     std::atomic<bool> needs_redraw_{false};
     std::atomic<bool> has_events_{false};

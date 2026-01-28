@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <memory>
 
 #include "include/cef_app.h"
 #include "include/cef_version.h"
@@ -29,31 +30,29 @@ void activateMacWindow(SDL_Window* window);
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
-#include "platform/macos_layer.h"
-#include "compositor/metal_compositor.h"
-#include "player/media_session.h"
 #include "player/macos/media_session_macos.h"
 #include "PFMoveApplication.h"
-#include "player/mpv/mpv_player_vk.h"
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "context/wgl_context.h"
-#include "player/media_session.h"
-#include "compositor/opengl_compositor.h"
-#include "player/mpv/mpv_player_gl.h"
+#include "context/opengl_frame_context.h"
 #else
 #include "context/egl_context.h"
-#include "platform/wayland_subsurface.h"
-#include "player/media_session.h"
+#include "context/opengl_frame_context.h"
 #include "player/mpris/media_session_mpris.h"
-#include "compositor/opengl_compositor.h"
-#include "player/mpv/mpv_player_vk.h"
-#include "player/mpv/mpv_player_gl.h"
 #include <unistd.h>  // For close()
 #endif
+#include "player/media_session.h"
+#include "player/media_session_thread.h"
+#include "player/video_stack.h"
+#include "player/video_renderer.h"
+#include "player/mpv_event_thread.h"
+#include "player/video_render_thread.h"
 #include "cef/cef_app.h"
 #include "cef/cef_client.h"
+#include "cef/cef_thread.h"
+#include "browser/browser_stack.h"
 #include "input/input_layer.h"
 #include "input/browser_layer.h"
 #include "input/menu_layer.h"
@@ -259,11 +258,7 @@ int main(int argc, char* argv[]) {
                        );
                 return 0;
             } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-                if (APP_GIT_HASH[0]) {
-                    printf("jellyfin-desktop-cef %s (%s)\n", APP_VERSION, APP_GIT_HASH);
-                } else {
-                    printf("jellyfin-desktop-cef %s\n", APP_VERSION);
-                }
+                printf("jellyfin-desktop-cef %s\n", APP_VERSION_STRING);
                 printf("  built " __DATE__ " " __TIME__ "\n");
                 printf("CEF %s\n", CEF_VERSION);
                 return 0;
@@ -303,11 +298,7 @@ int main(int argc, char* argv[]) {
         initLogging(log_level);
 
         // Startup banner
-        if (APP_GIT_HASH[0]) {
-            LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s (%s) built " __DATE__ " " __TIME__, APP_VERSION, APP_GIT_HASH);
-        } else {
-            LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef %s built " __DATE__ " " __TIME__, APP_VERSION);
-        }
+        LOG_INFO(LOG_MAIN, "jellyfin-desktop-cef " APP_VERSION_STRING " built " __DATE__ " " __TIME__);
         LOG_INFO(LOG_MAIN, "CEF " CEF_VERSION);
 #if !defined(__APPLE__) && !defined(_WIN32)
         if (use_dmabuf) {
@@ -391,6 +382,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Register custom event for cross-thread main loop wake-up
+    static Uint32 SDL_EVENT_WAKE = SDL_RegisterEvents(1);
+    auto wakeMainLoop = []() {
+        SDL_Event event{};
+        event.type = SDL_EVENT_WAKE;
+        SDL_PushEvent(&event);
+    };
+
     const int width = 1280;
     const int height = 720;
 
@@ -416,79 +415,29 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef __APPLE__
-    // macOS: Initialize video layer first (will be at back)
-    // Get physical pixel dimensions for HiDPI support
-    int video_physical_w, video_physical_h;
-    SDL_GetWindowSizeInPixels(window, &video_physical_w, &video_physical_h);
-
-    MacOSVideoLayer videoLayer;
-    if (!videoLayer.init(window, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                         nullptr, 0, nullptr)) {
-        LOG_ERROR(LOG_PLATFORM, "Fatal: macOS video layer init failed");
-        return 1;
-    }
-    if (!videoLayer.createSwapchain(video_physical_w, video_physical_h)) {
-        LOG_ERROR(LOG_PLATFORM, "Fatal: macOS video layer swapchain failed");
-        return 1;
-    }
-    bool has_subsurface = true;
-    LOG_INFO(LOG_PLATFORM, "Using macOS CAMetalLayer for video (HDR: %s)", videoLayer.isHdr() ? "yes" : "no");
-
-    // Initialize mpv player (using video layer's Vulkan context)
-    MpvPlayerVk mpv;
-    bool has_video = false;
-    double current_playback_rate = 1.0;
-    if (!mpv.init(nullptr, &videoLayer)) {
-        LOG_ERROR(LOG_MPV, "MpvPlayerVk init failed");
+    // Create video stack
+    VideoStack videoStack = VideoStack::create(window, width, height);
+    if (!videoStack.player || !videoStack.renderer) {
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+    MpvPlayer* mpv = videoStack.player.get();
+    VideoRenderer& videoRenderer = *videoStack.renderer;
+    bool has_video = false;
+    bool video_needs_rerender = false;
+    double current_playback_rate = 1.0;
 
-    // Player dispatch helpers (macOS has single Vulkan player)
-    auto mpvLoadFile = [&](const std::string& path, double startSec = 0.0) {
-        return mpv.loadFile(path, startSec);
-    };
-    auto mpvStop = [&]() { mpv.stop(); };
-    auto mpvPause = [&]() { mpv.pause(); };
-    auto mpvPlay = [&]() { mpv.play(); };
-    auto mpvSeek = [&](double sec) { mpv.seek(sec); };
-    auto mpvSetVolume = [&](int vol) { mpv.setVolume(vol); };
-    auto mpvSetMuted = [&](bool m) { mpv.setMuted(m); };
-    auto mpvSetSpeed = [&](double s) { mpv.setSpeed(s); };
-    auto mpvSetNormalizationGain = [&](double g) { mpv.setNormalizationGain(g); };
-    auto mpvSetSubtitleTrack = [&](int sid) { mpv.setSubtitleTrack(sid); };
-    auto mpvSetAudioTrack = [&](int aid) { mpv.setAudioTrack(aid); };
-    auto mpvSetAudioDelay = [&](double d) { mpv.setAudioDelay(d); };
-    auto mpvIsPaused = [&]() { return mpv.isPaused(); };
-    auto mpvIsPlaying = [&]() { return mpv.isPlaying(); };
-    auto mpvHasFrame = [&]() { return mpv.hasFrame(); };
-    auto mpvProcessEvents = [&]() { mpv.processEvents(); };
-    auto mpvCleanup = [&]() { mpv.cleanup(); };
-
-    // Initialize Metal compositor for CEF overlay (renders on top of video)
+    // HiDPI setup for CEF overlays
     float initial_scale = SDL_GetWindowDisplayScale(window);
     int physical_width = static_cast<int>(width * initial_scale);
     int physical_height = static_cast<int>(height * initial_scale);
     LOG_INFO(LOG_WINDOW, "macOS HiDPI: scale=%.2f logical=%dx%d physical=%dx%d",
              initial_scale, width, height, physical_width, physical_height);
 
-    MetalCompositor compositor;
-    if (!compositor.init(window, physical_width, physical_height)) {
-        LOG_ERROR(LOG_COMPOSITOR, "MetalCompositor init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-
-    // Second compositor for overlay browser
-    MetalCompositor overlay_compositor;
-    if (!overlay_compositor.init(window, physical_width, physical_height)) {
-        LOG_ERROR(LOG_OVERLAY, "Overlay compositor init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
+    // Compositor context for BrowserEntry init
+    CompositorContext compositor_ctx;
+    compositor_ctx.window = window;
 #elif defined(_WIN32)
     // Windows: Initialize WGL context for OpenGL rendering
     WGLContext wgl;
@@ -499,58 +448,26 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Initialize mpv player with OpenGL backend (better Wine compatibility)
-    MpvPlayerGL mpv;
+    // Create video stack
+    VideoStack videoStack = VideoStack::create(window, width, height, &wgl);
+    if (!videoStack.player || !videoStack.renderer) {
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    MpvPlayer* mpv = videoStack.player.get();
+    VideoRenderer& videoRenderer = *videoStack.renderer;
     bool has_video = false;
     bool video_needs_rerender = false;
     double current_playback_rate = 1.0;
-    bool has_subsurface = false;  // No separate video layer on Windows OpenGL path
-    if (!mpv.init(&wgl)) {
-        LOG_ERROR(LOG_MPV, "MpvPlayerGL init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-    LOG_INFO(LOG_MPV, "Using OpenGL for video rendering (no HDR)");
 
-    // Player dispatch helpers (Windows has single OpenGL player)
-    auto mpvLoadFile = [&](const std::string& path, double startSec = 0.0) {
-        return mpv.loadFile(path, startSec);
-    };
-    auto mpvStop = [&]() { mpv.stop(); };
-    auto mpvPause = [&]() { mpv.pause(); };
-    auto mpvPlay = [&]() { mpv.play(); };
-    auto mpvSeek = [&](double sec) { mpv.seek(sec); };
-    auto mpvSetVolume = [&](int vol) { mpv.setVolume(vol); };
-    auto mpvSetMuted = [&](bool m) { mpv.setMuted(m); };
-    auto mpvSetSpeed = [&](double s) { mpv.setSpeed(s); };
-    auto mpvSetNormalizationGain = [&](double g) { mpv.setNormalizationGain(g); };
-    auto mpvSetSubtitleTrack = [&](int sid) { mpv.setSubtitleTrack(sid); };
-    auto mpvSetAudioTrack = [&](int aid) { mpv.setAudioTrack(aid); };
-    auto mpvSetAudioDelay = [&](double d) { mpv.setAudioDelay(d); };
-    auto mpvIsPaused = [&]() { return mpv.isPaused(); };
-    auto mpvIsPlaying = [&]() { return mpv.isPlaying(); };
-    auto mpvHasFrame = [&]() { return mpv.hasFrame(); };
-    auto mpvProcessEvents = [&]() { mpv.processEvents(); };
-    auto mpvCleanup = [&]() { mpv.cleanup(); };
+    OpenGLFrameContext frameContext(&wgl);
 
-    // Initialize OpenGL compositor for CEF overlay
-    OpenGLCompositor compositor;
-    if (!compositor.init(&wgl, width, height)) {
-        LOG_ERROR(LOG_COMPOSITOR, "OpenGLCompositor init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-
-    // Second compositor for overlay browser
-    OpenGLCompositor overlay_compositor;
-    if (!overlay_compositor.init(&wgl, width, height)) {
-        LOG_ERROR(LOG_OVERLAY, "Overlay compositor init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
+    // Compositor context for BrowserEntry init
+    CompositorContext compositor_ctx;
+    compositor_ctx.gl_context = &wgl;
+    int physical_width = width;
+    int physical_height = height;
 #else
     // Linux: Initialize EGL context for OpenGL rendering
     EGLContext_ egl;
@@ -561,130 +478,40 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Detect Wayland vs X11 at runtime
-    const char* videoDriver = SDL_GetCurrentVideoDriver();
-    bool useWayland = videoDriver && strcmp(videoDriver, "wayland") == 0;
-    LOG_INFO(LOG_MAIN, "SDL video driver: %s -> using %s",
-             videoDriver ? videoDriver : "null", useWayland ? "Wayland" : "X11");
-
-    // Video layer (Wayland subsurface only - X11 uses OpenGL composition)
-    WaylandSubsurface waylandSubsurface;
-    bool has_subsurface = false;
-    bool is_hdr = false;
-
-    if (useWayland) {
-        if (!waylandSubsurface.init(window, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                                     nullptr, 0, nullptr)) {
-            LOG_ERROR(LOG_PLATFORM, "Fatal: Wayland subsurface init failed");
-            return 1;
-        }
-        // Use physical pixel dimensions for HiDPI support
-        int video_physical_w, video_physical_h;
-        SDL_GetWindowSizeInPixels(window, &video_physical_w, &video_physical_h);
-        if (!waylandSubsurface.createSwapchain(video_physical_w, video_physical_h)) {
-            LOG_ERROR(LOG_PLATFORM, "Fatal: Wayland subsurface swapchain failed");
-            return 1;
-        }
-        // Set viewport destination to logical size (buffer rendered at physical, displayed at logical)
-        waylandSubsurface.setDestinationSize(width, height);
-        has_subsurface = true;
-        is_hdr = waylandSubsurface.isHdr();
-        LOG_INFO(LOG_PLATFORM, "Using Wayland subsurface for video (HDR: %s)", is_hdr ? "yes" : "no");
-    } else {
-        // X11: No separate video layer - use OpenGL composition like Windows
-        has_subsurface = false;
-        is_hdr = false;
-        LOG_INFO(LOG_PLATFORM, "Using OpenGL composition for video (X11, no HDR)");
+    // Create video stack (detects Wayland vs X11 internally)
+    VideoStack videoStack = VideoStack::create(window, width, height, &egl);
+    if (!videoStack.player || !videoStack.renderer) {
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
     }
-
-    // Initialize mpv player
-    // Wayland: MpvPlayerVk with subsurface for HDR support
-    // X11: MpvPlayerGL with OpenGL composition (gpu-next backend)
-    MpvPlayerVk mpvVk;
-    MpvPlayerGL mpvGl;
+    MpvPlayer* mpv = videoStack.player.get();
+    VideoRenderer& videoRenderer = *videoStack.renderer;
     bool has_video = false;
     bool video_needs_rerender = false;
     double current_playback_rate = 1.0;
 
-    if (useWayland) {
-        if (!mpvVk.init(nullptr, &waylandSubsurface)) {
-            LOG_ERROR(LOG_MPV, "MpvPlayerVk init failed");
-            SDL_DestroyWindow(window);
-            SDL_Quit();
-            return 1;
-        }
-    } else {
-        if (!mpvGl.init(&egl)) {
-            LOG_ERROR(LOG_MPV, "MpvPlayerGL init failed");
-            SDL_DestroyWindow(window);
-            SDL_Quit();
-            return 1;
-        }
-    }
+    // Frame context (same for both Wayland and X11 - both use EGL)
+    OpenGLFrameContext frameContext(&egl);
 
-    // Player dispatch helpers - route to correct player based on display server
-    auto mpvLoadFile = [&](const std::string& path, double startSec = 0.0) {
-        return useWayland ? mpvVk.loadFile(path, startSec) : mpvGl.loadFile(path, startSec);
-    };
-    auto mpvStop = [&]() { useWayland ? mpvVk.stop() : mpvGl.stop(); };
-    auto mpvPause = [&]() { useWayland ? mpvVk.pause() : mpvGl.pause(); };
-    auto mpvPlay = [&]() { useWayland ? mpvVk.play() : mpvGl.play(); };
-    auto mpvSeek = [&](double sec) { useWayland ? mpvVk.seek(sec) : mpvGl.seek(sec); };
-    auto mpvSetVolume = [&](int vol) { useWayland ? mpvVk.setVolume(vol) : mpvGl.setVolume(vol); };
-    auto mpvSetMuted = [&](bool m) { useWayland ? mpvVk.setMuted(m) : mpvGl.setMuted(m); };
-    auto mpvSetSpeed = [&](double s) { useWayland ? mpvVk.setSpeed(s) : mpvGl.setSpeed(s); };
-    auto mpvSetNormalizationGain = [&](double g) { useWayland ? mpvVk.setNormalizationGain(g) : mpvGl.setNormalizationGain(g); };
-    auto mpvSetSubtitleTrack = [&](int sid) { useWayland ? mpvVk.setSubtitleTrack(sid) : mpvGl.setSubtitleTrack(sid); };
-    auto mpvSetAudioTrack = [&](int aid) { useWayland ? mpvVk.setAudioTrack(aid) : mpvGl.setAudioTrack(aid); };
-    auto mpvSetAudioDelay = [&](double d) { useWayland ? mpvVk.setAudioDelay(d) : mpvGl.setAudioDelay(d); };
-    auto mpvIsPaused = [&]() { return useWayland ? mpvVk.isPaused() : mpvGl.isPaused(); };
-    auto mpvIsPlaying = [&]() { return useWayland ? mpvVk.isPlaying() : mpvGl.isPlaying(); };
-    auto mpvHasFrame = [&]() { return useWayland ? mpvVk.hasFrame() : mpvGl.hasFrame(); };
-    auto mpvProcessEvents = [&]() { useWayland ? mpvVk.processEvents() : mpvGl.processEvents(); };
-    auto mpvCleanup = [&]() { useWayland ? mpvVk.cleanup() : mpvGl.cleanup(); };
-
-    // Initialize OpenGL compositor for CEF overlay
+    // Compositor context for BrowserEntry init
     // Use SDL physical size - resize handler will update when Wayland reports actual scale
     int physical_width, physical_height;
     SDL_GetWindowSizeInPixels(window, &physical_width, &physical_height);
     LOG_INFO(LOG_WINDOW, "HiDPI: logical=%dx%d physical=%dx%d",
              width, height, physical_width, physical_height);
 
-    OpenGLCompositor compositor;
-    if (!compositor.init(&egl, physical_width, physical_height)) {
-        LOG_ERROR(LOG_COMPOSITOR, "OpenGLCompositor init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-
-    // Second compositor for overlay browser
-    OpenGLCompositor overlay_compositor;
-    if (!overlay_compositor.init(&egl, physical_width, physical_height)) {
-        LOG_ERROR(LOG_OVERLAY, "Overlay compositor init failed");
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
+    CompositorContext compositor_ctx;
+    compositor_ctx.gl_context = &egl;
 #endif
 
     // Load settings
     Settings::instance().load();
 
-    // CEF settings
+    // CEF settings (CefThread sets external_message_pump)
     CefSettings settings;
     settings.no_sandbox = true;
     settings.windowless_rendering_enabled = true;
-#ifdef __APPLE__
-    // macOS: use external_message_pump for responsive input handling
-    settings.external_message_pump = true;
-#elif defined(_WIN32)
-    // Windows: multi_threaded_message_loop is supported
-    settings.multi_threaded_message_loop = true;
-#else
-    // Linux: use external_message_pump for synchronous paint during resize
-    settings.external_message_pump = true;
-#endif
 
 #ifdef __APPLE__
     // macOS: Set framework path (cef_framework_path set earlier during CEF loading)
@@ -735,56 +562,40 @@ int main(int argc, char* argv[]) {
     // Capture stderr before CEF starts (routes Chromium logs through SDL)
     initStderrCapture();
 
+#ifdef __APPLE__
+    // Pre-create Metal compositors BEFORE CefInitialize to avoid startup delay
+    // Metal device/pipeline/texture creation takes time; do it while CEF init runs
+    auto overlay_compositor = std::make_unique<MetalCompositor>();
+    overlay_compositor->init(window, physical_width, physical_height);
+    LOG_DEBUG(LOG_COMPOSITOR, "Pre-created overlay Metal compositor");
+
+    auto main_compositor = std::make_unique<MetalCompositor>();
+    main_compositor->init(window, physical_width, physical_height);
+    LOG_DEBUG(LOG_COMPOSITOR, "Pre-created main Metal compositor");
+
+    // macOS: Use external_message_pump on main thread (CEF doesn't handle separate thread well)
+    settings.external_message_pump = true;
     if (!CefInitialize(main_args, settings, app, nullptr)) {
         LOG_ERROR(LOG_CEF, "CefInitialize failed");
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+    LOG_INFO(LOG_CEF, "CEF context initialized");
+#else
+    // Windows/Linux: Start CEF on dedicated thread
+    CefThread cefThread;
+    if (!cefThread.start(main_args, settings, app)) {
+        LOG_ERROR(LOG_CEF, "CefThread start failed");
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+#endif
 
-    // Create browser
-    // Double-buffer for paint callbacks - reduces lock contention
-    struct PaintBuffer {
-        std::vector<uint8_t> data;
-        int width = 0;
-        int height = 0;
-        bool dirty = false;
-    };
-    std::array<PaintBuffer, 2> paint_buffers;
-    std::atomic<int> paint_write_idx{0};  // CEF writes here
-    std::mutex paint_swap_mutex;  // Only held during buffer swap
-    int paint_width = 0, paint_height = 0;
+    // Browser stack manages all browsers and their paint buffers
+    BrowserStack browsers;
     bool paint_size_matched = true;  // Track if last paint matched compositor size
-
-    // Helper to flush paint buffer to compositor (used by both macOS and Linux paths)
-    auto flushPaintBuffer = [&]() {
-        std::lock_guard<std::mutex> lock(paint_swap_mutex);
-        int read_idx = 1 - paint_write_idx.load(std::memory_order_acquire);
-        auto& buf = paint_buffers[read_idx];
-        if (buf.dirty && !buf.data.empty()) {
-            compositor.updateOverlayPartial(buf.data.data(), buf.width, buf.height);
-            if (buf.width == static_cast<int>(compositor.width()) &&
-                buf.height == static_cast<int>(compositor.height())) {
-                paint_size_matched = true;
-            }
-            buf.dirty = false;
-        }
-    };
-
-    // Double-buffer for overlay paint callbacks (same pattern as main browser)
-    std::array<PaintBuffer, 2> overlay_paint_buffers;
-    std::atomic<int> overlay_paint_write_idx{0};
-    std::mutex overlay_paint_swap_mutex;
-
-    auto flushOverlayPaintBuffer = [&]() {
-        std::lock_guard<std::mutex> lock(overlay_paint_swap_mutex);
-        int read_idx = 1 - overlay_paint_write_idx.load(std::memory_order_acquire);
-        auto& buf = overlay_paint_buffers[read_idx];
-        if (buf.dirty && !buf.data.empty()) {
-            overlay_compositor.updateOverlayPartial(buf.data.data(), buf.width, buf.height);
-            buf.dirty = false;
-        }
-    };
 
     // Player command queue
     struct PlayerCmd {
@@ -806,6 +617,8 @@ int main(int argc, char* argv[]) {
 #else
     mediaSession.addBackend(createMprisBackend(&mediaSession));
 #endif
+    MediaSessionThread mediaSessionThread;
+    mediaSessionThread.start(&mediaSession);
     mediaSession.onPlay = [&]() {
         std::lock_guard<std::mutex> lock(cmd_mutex);
         pending_cmds.push_back({"media_action", "play", 0, 0.0});
@@ -865,31 +678,31 @@ int main(int argc, char* argv[]) {
         SDL_GetWindowSizeInPixels(window, &w, &h);
     };
 
+    // Create overlay browser entry
+    auto overlay_entry = std::make_unique<BrowserEntry>();
+    BrowserEntry* overlay_ptr = overlay_entry.get();  // save pointer before move
+#ifdef __APPLE__
+    // Use pre-created Metal compositor (avoids startup delay)
+    overlay_ptr->setCompositor(std::move(overlay_compositor));
+#else
+    if (!overlay_ptr->initCompositor(compositor_ctx, physical_width, physical_height)) {
+        LOG_ERROR(LOG_OVERLAY, "Overlay compositor init failed");
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+#endif
+    auto overlay_paint_cb = overlay_ptr->makePaintCallback();
+
     // Overlay browser client (for loading UI)
     CefRefPtr<OverlayClient> overlay_client(new OverlayClient(width, height,
-        [&](const void* buffer, int w, int h) {
+        [overlay_paint_cb](const void* buffer, int w, int h) {
             static bool first_overlay_paint = true;
             if (first_overlay_paint) {
                 LOG_DEBUG(LOG_OVERLAY, "first paint callback: %dx%d", w, h);
                 first_overlay_paint = false;
             }
-            // Write to back buffer without blocking (same pattern as main browser)
-            int write_idx = overlay_paint_write_idx.load(std::memory_order_relaxed);
-            auto& buf = overlay_paint_buffers[write_idx];
-            size_t size = w * h * 4;
-            if (buf.data.size() < size) {
-                buf.data.resize(size);
-            }
-            memcpy(buf.data.data(), buffer, size);
-            buf.width = w;
-            buf.height = h;
-
-            // Swap buffers (brief lock)
-            {
-                std::lock_guard<std::mutex> lock(overlay_paint_swap_mutex);
-                buf.dirty = true;
-                overlay_paint_write_idx.store(1 - write_idx, std::memory_order_release);
-            }
+            overlay_paint_cb(buffer, w, h);
         },
         [&](const std::string& url) {
             // loadServer callback - start loading main browser
@@ -900,50 +713,62 @@ int main(int argc, char* argv[]) {
         getPhysicalSize,
 #if !defined(__APPLE__) && !defined(_WIN32)
         // Accelerated paint callback for overlay
-        [&](int fd, uint32_t stride, uint64_t modifier, int w, int h) {
-            overlay_compositor.queueDmabuf(fd, stride, modifier, w, h);
+        [overlay_ptr, wakeMainLoop](int fd, uint32_t stride, uint64_t modifier, int w, int h) {
+            overlay_ptr->compositor->queueDmabuf(fd, stride, modifier, w, h);
+            wakeMainLoop();
         }
 #else
         nullptr
 #endif
 #ifdef __APPLE__
         // IOSurface callback for macOS accelerated paint - queue for import on main thread
-        , [&](void* surface, int format, int w, int h) {
-            overlay_compositor.queueIOSurface(surface, format, w, h);
+        , [overlay_ptr](void* surface, int format, int w, int h) {
+            overlay_ptr->compositor->queueIOSurface(surface, format, w, h);
         }
 #endif
     ));
+    overlay_ptr->client = overlay_client;
+    overlay_ptr->getBrowser = [overlay_client]() { return overlay_client->browser(); };
+    overlay_ptr->resizeBrowser = [overlay_client](int w, int h) { overlay_client->resize(w, h); };
+    overlay_ptr->getInputReceiver = [overlay_client]() -> InputReceiver* { return overlay_client.get(); };
+    overlay_ptr->isClosed = [overlay_client]() { return overlay_client->isClosed(); };
+    overlay_ptr->input_layer = std::make_unique<BrowserLayer>(overlay_client.get());
+    overlay_ptr->input_layer->setWindowSize(width, height);
+    overlay_ptr->wake_main_loop = wakeMainLoop;
+    browsers.add("overlay", std::move(overlay_entry));
 
     // Track who initiated fullscreen (only changes from NONE, returns to NONE on exit)
     enum class FullscreenSource { NONE, WM, CEF };
     FullscreenSource fullscreen_source = FullscreenSource::NONE;
 
+    // Create main browser entry
+    auto main_entry = std::make_unique<BrowserEntry>();
+    BrowserEntry* main_ptr = main_entry.get();  // save pointer before move
+#ifdef __APPLE__
+    // Use pre-created Metal compositor (avoids startup delay)
+    main_ptr->setCompositor(std::move(main_compositor));
+#else
+    if (!main_ptr->initCompositor(compositor_ctx, physical_width, physical_height)) {
+        LOG_ERROR(LOG_COMPOSITOR, "Main compositor init failed");
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+#endif
+    auto main_paint_cb = main_ptr->makePaintCallback();
+
     CefRefPtr<Client> client(new Client(width, height,
-        [&](const void* buffer, int w, int h) {
+        [main_paint_cb, main_ptr, &paint_size_matched](const void* buffer, int w, int h) {
             static int paint_count = 0;
             if (paint_count++ % 100 == 0) {
                 LOG_DEBUG(LOG_CEF, "main browser paint #%d: %dx%d", paint_count, w, h);
             }
-            // Write to back buffer without blocking
-            int write_idx = paint_write_idx.load(std::memory_order_relaxed);
-            auto& buf = paint_buffers[write_idx];
-            size_t size = w * h * 4;
-            if (buf.data.size() < size) {
-                buf.data.resize(size);
+            main_paint_cb(buffer, w, h);
+            // Track if paint matched compositor size
+            if (w == static_cast<int>(main_ptr->compositor->width()) &&
+                h == static_cast<int>(main_ptr->compositor->height())) {
+                paint_size_matched = true;
             }
-            memcpy(buf.data.data(), buffer, size);
-            buf.width = w;
-            buf.height = h;
-
-            // Swap buffers (brief lock)
-            {
-                std::lock_guard<std::mutex> lock(paint_swap_mutex);
-                buf.dirty = true;
-                paint_write_idx.store(1 - write_idx, std::memory_order_release);
-            }
-
-            paint_width = w;
-            paint_height = h;
         },
         [&](const std::string& cmd, const std::string& arg, int intArg, const std::string& metadata) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
@@ -951,8 +776,9 @@ int main(int argc, char* argv[]) {
         },
 #if !defined(__APPLE__) && !defined(_WIN32)
         // Accelerated paint callback - queue dmabuf for import on main thread
-        [&](int fd, uint32_t stride, uint64_t modifier, int w, int h) {
-            compositor.queueDmabuf(fd, stride, modifier, w, h);
+        [main_ptr, wakeMainLoop](int fd, uint32_t stride, uint64_t modifier, int w, int h) {
+            main_ptr->compositor->queueDmabuf(fd, stride, modifier, w, h);
+            wakeMainLoop();
         },
 #else
         nullptr,  // No GPU accelerated paint on macOS/Windows
@@ -987,11 +813,20 @@ int main(int argc, char* argv[]) {
         getPhysicalSize
 #ifdef __APPLE__
         // IOSurface callback for macOS accelerated paint - queue for import on main thread
-        , [&](void* surface, int format, int w, int h) {
-            compositor.queueIOSurface(surface, format, w, h);
+        , [main_ptr](void* surface, int format, int w, int h) {
+            main_ptr->compositor->queueIOSurface(surface, format, w, h);
         }
 #endif
     ));
+    main_ptr->client = client;
+    main_ptr->getBrowser = [client]() { return client->browser(); };
+    main_ptr->resizeBrowser = [client](int w, int h) { client->resize(w, h); };
+    main_ptr->getInputReceiver = [client]() -> InputReceiver* { return client.get(); };
+    main_ptr->isClosed = [client]() { return client->isClosed(); };
+    main_ptr->input_layer = std::make_unique<BrowserLayer>(client.get());
+    main_ptr->input_layer->setWindowSize(width, height);
+    main_ptr->wake_main_loop = wakeMainLoop;
+    browsers.add("main", std::move(main_entry));
 
     CefWindowInfo window_info;
     window_info.SetAsWindowless(0);
@@ -1051,17 +886,13 @@ int main(int argc, char* argv[]) {
         LOG_INFO(LOG_MAIN, "Loading saved server: %s", saved_url.c_str());
         CefBrowserHost::CreateBrowser(window_info, client, saved_url, browser_settings, nullptr, nullptr);
     }
-    // Input routing stack
-    BrowserLayer overlay_browser_layer(overlay_client.get());
-    BrowserLayer main_browser_layer(client.get());
-    overlay_browser_layer.setWindowSize(width, height);
-    main_browser_layer.setWindowSize(width, height);
+    // Input routing stack - use BrowserStack for input layers
     MenuLayer menu_layer(&menu);
     InputStack input_stack;
-    input_stack.push(&overlay_browser_layer);  // Start with overlay
+    input_stack.push(browsers.getInputLayer("overlay"));  // Start with overlay
 
-    // Track which browser layer is active
-    BrowserLayer* active_browser = &overlay_browser_layer;
+    // Track which browser layer is active (for WindowStateNotifier)
+    BrowserLayer* active_browser = browsers.getInputLayer("overlay");
 
     // Push/pop menu layer on open/close
     menu.setOnOpen([&]() { input_stack.push(&menu_layer); });
@@ -1070,15 +901,10 @@ int main(int argc, char* argv[]) {
     // Window state notifications
     WindowStateNotifier window_state;
     window_state.add(active_browser);
-#ifdef __APPLE__
-    // macOS: Don't pause video on minimize - CAMetalLayer continues rendering
-#elif defined(_WIN32)
-    MpvLayer mpv_layer(&mpv);
+#ifndef __APPLE__
+    // Windows/Linux: Pause video on minimize
+    MpvLayer mpv_layer(mpv);
     window_state.add(&mpv_layer);
-#else
-    MpvLayerVk mpv_layer_vk(&mpvVk);
-    MpvLayerGL mpv_layer_gl(&mpvGl);
-    window_state.add(useWayland ? static_cast<WindowStateListener*>(&mpv_layer_vk) : static_cast<WindowStateListener*>(&mpv_layer_gl));
 #endif
 
     bool focus_set = false;
@@ -1089,195 +915,40 @@ int main(int argc, char* argv[]) {
 #ifdef __APPLE__
     bool window_activated = false;  // Activate window on first expose event
 #endif
-#ifndef _WIN32
-    auto last_cef_work = Clock::now();
-    auto last_resize_pump = Clock::now() - std::chrono::milliseconds(100);  // Allow immediate first pump
+#if !defined(_WIN32) && !defined(__APPLE__)
     auto last_resize_time = Clock::now() - std::chrono::seconds(10);  // Track when resize stopped
-    // Calculate pump interval based on display refresh rate (e.g., 8ms for 120Hz, 16ms for 60Hz)
-    int cef_pump_interval_ms = (mode && mode->refresh_rate > 0) ? static_cast<int>(1000.0f / mode->refresh_rate) : 16;
-    LOG_DEBUG(LOG_CEF, "CEF pump interval: %dms", cef_pump_interval_ms);
 #endif
 
-    // Set up mpv event callbacks (event-driven like jellyfin-desktop)
-    // Callbacks for position updates
-    auto positionCb = [&](double ms) {
-        mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-    };
-    auto durationCb = [&](double ms) {
-        client->updateDuration(ms);
-    };
-    auto playingCb = [&]() {
-        client->emitPlaying();
-        mediaSession.setPlaybackState(PlaybackState::Playing);
-    };
-    auto stateCb = [&](bool paused) {
-        if (!mpvIsPlaying()) return;
-        if (paused) {
-            client->emitPaused();
-            mediaSession.setPlaybackState(PlaybackState::Paused);
-        } else {
-            client->emitPlaying();
-            mediaSession.setPlaybackState(PlaybackState::Playing);
-        }
-    };
-    auto finishedCb = [&]() {
-        LOG_INFO(LOG_MAIN, "Track finished naturally (EOF), emitting finished signal");
-        has_video = false;
-#if !defined(__APPLE__) && !defined(_WIN32)
-        if (has_subsurface) {
-            waylandSubsurface.setVisible(false);
-        }
-#endif
-        client->emitFinished();
-        mediaSession.setPlaybackState(PlaybackState::Stopped);
-    };
-    auto canceledCb = [&]() {
-        LOG_DEBUG(LOG_MAIN, "Track canceled (user stop), emitting canceled signal");
-        has_video = false;
-#if !defined(__APPLE__) && !defined(_WIN32)
-        if (has_subsurface) {
-            waylandSubsurface.setVisible(false);
-        }
-#endif
-        client->emitCanceled();
-        mediaSession.setPlaybackState(PlaybackState::Stopped);
-    };
-    auto seekedCb = [&](double ms) {
-        client->updatePosition(ms);
-        mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-        mediaSession.setRate(current_playback_rate);
-        mediaSession.emitSeeked(static_cast<int64_t>(ms * 1000.0));
-    };
-    auto bufferingCb = [&](bool buffering, double ms) {
-        mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-        if (buffering) {
-            mediaSession.setRate(0.0);
-        } else {
-            mediaSession.setRate(current_playback_rate);
-        }
-    };
-    auto bufferedRangesCb = [&](const auto& ranges) {
-        std::string json = "[";
-        for (size_t i = 0; i < ranges.size(); i++) {
-            if (i > 0) json += ",";
-            json += "{\"start\":" + std::to_string(ranges[i].start) +
-                    ",\"end\":" + std::to_string(ranges[i].end) + "}";
-        }
-        json += "]";
-        client->executeJS("if(window._nativeUpdateBufferedRanges)window._nativeUpdateBufferedRanges(" + json + ");");
-    };
-    auto coreIdleCb = [&](bool idle, double ms) {
-        (void)idle;
-        mediaSession.setPosition(static_cast<int64_t>(ms * 1000.0));
-    };
-    auto errorCb = [&](const std::string& error) {
-        LOG_ERROR(LOG_MAIN, "Playback error: %s", error.c_str());
-        has_video = false;
-#if !defined(__APPLE__) && !defined(_WIN32)
-        if (has_subsurface) {
-            waylandSubsurface.setVisible(false);
-        }
-#endif
-        client->emitError(error);
-        mediaSession.setPlaybackState(PlaybackState::Stopped);
-    };
+    // Start mpv event thread - processes events and queues them for main thread
+    MpvEventThread mpvEvents;
+    mpvEvents.start(mpv);
 
-    // Set callbacks on the active player
-#if defined(__APPLE__) || defined(_WIN32)
-    mpv.setPositionCallback(positionCb);
-    mpv.setDurationCallback(durationCb);
-    mpv.setPlayingCallback(playingCb);
-    mpv.setStateCallback(stateCb);
-    mpv.setFinishedCallback(finishedCb);
-    mpv.setCanceledCallback(canceledCb);
-    mpv.setSeekedCallback(seekedCb);
-    mpv.setBufferingCallback(bufferingCb);
-    mpv.setBufferedRangesCallback(bufferedRangesCb);
-    mpv.setCoreIdleCallback(coreIdleCb);
-    mpv.setErrorCallback(errorCb);
-#else
-    if (useWayland) {
-        mpvVk.setPositionCallback(positionCb);
-        mpvVk.setDurationCallback(durationCb);
-        mpvVk.setPlayingCallback(playingCb);
-        mpvVk.setStateCallback(stateCb);
-        mpvVk.setFinishedCallback(finishedCb);
-        mpvVk.setCanceledCallback(canceledCb);
-        mpvVk.setSeekedCallback(seekedCb);
-        mpvVk.setBufferingCallback(bufferingCb);
-        mpvVk.setBufferedRangesCallback(bufferedRangesCb);
-        mpvVk.setCoreIdleCallback(coreIdleCb);
-        mpvVk.setErrorCallback(errorCb);
-    } else {
-        mpvGl.setPositionCallback(positionCb);
-        mpvGl.setDurationCallback(durationCb);
-        mpvGl.setPlayingCallback(playingCb);
-        mpvGl.setStateCallback(stateCb);
-        mpvGl.setFinishedCallback(finishedCb);
-        mpvGl.setCanceledCallback(canceledCb);
-        mpvGl.setSeekedCallback(seekedCb);
-        mpvGl.setBufferingCallback(bufferingCb);
-        // MpvPlayerGL uses same BufferedRange struct
-        mpvGl.setBufferedRangesCallback([&](const std::vector<MpvPlayerGL::BufferedRange>& ranges) {
-            std::string json = "[";
-            for (size_t i = 0; i < ranges.size(); i++) {
-                if (i > 0) json += ",";
-                json += "{\"start\":" + std::to_string(ranges[i].start) +
-                        ",\"end\":" + std::to_string(ranges[i].end) + "}";
-            }
-            json += "]";
-            client->executeJS("if(window._nativeUpdateBufferedRanges)window._nativeUpdateBufferedRanges(" + json + ");");
-        });
-        mpvGl.setCoreIdleCallback(coreIdleCb);
-        mpvGl.setErrorCallback(errorCb);
-    }
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // Start video render thread - renders video on dedicated thread to avoid blocking main loop
+    VideoRenderThread videoRenderThread;
+    videoRenderThread.start(&videoRenderer);
+    mpv->setRedrawCallback([&videoRenderThread]() {
+        videoRenderThread.notify();
+    });
 #endif
 
 #ifdef __APPLE__
     // Live resize support - event watcher is called during modal resize loop
     struct LiveResizeContext {
         SDL_Window* window;
-        MetalCompositor* compositor;
-        MetalCompositor* overlay_compositor;
-        Client* client;
-        OverlayClient* overlay_client;
-        MacOSVideoLayer* videoLayer;
-        MpvPlayerVk* mpv;
+        BrowserStack* browsers;
+        VideoRenderer* videoRenderer;
         int* current_width;
         int* current_height;
-        bool* has_subsurface;
         bool* has_video;
-        float* overlay_browser_alpha;
-        OverlayState* overlay_state;
-        // Paint buffer access for main browser
-        std::array<PaintBuffer, 2>* paint_buffers;
-        std::atomic<int>* paint_write_idx;
-        std::mutex* paint_swap_mutex;
-        // Paint buffer access for overlay browser
-        std::array<PaintBuffer, 2>* overlay_paint_buffers;
-        std::atomic<int>* overlay_paint_write_idx;
-        std::mutex* overlay_paint_swap_mutex;
     };
     LiveResizeContext live_resize_ctx = {
         window,
-        &compositor,
-        &overlay_compositor,
-        client.get(),
-        overlay_client.get(),
-        &videoLayer,
-        &mpv,
+        &browsers,
+        &videoRenderer,
         &current_width,
         &current_height,
-        &has_subsurface,
-        &has_video,
-        &overlay_browser_alpha,
-        &overlay_state,
-        &paint_buffers,
-        &paint_write_idx,
-        &paint_swap_mutex,
-        &overlay_paint_buffers,
-        &overlay_paint_write_idx,
-        &overlay_paint_swap_mutex
+        &has_video
     };
 
     auto liveResizeCallback = [](void* userdata, SDL_Event* event) -> bool {
@@ -1287,68 +958,28 @@ int main(int argc, char* argv[]) {
             *ctx->current_width = event->window.data1;
             *ctx->current_height = event->window.data2;
 
-            // Tell CEF the new size - it will repaint asynchronously
-            ctx->client->resize(*ctx->current_width, *ctx->current_height);
-            ctx->overlay_client->resize(*ctx->current_width, *ctx->current_height);
+            // Tell all browsers the new size
+            ctx->browsers->resizeAll(*ctx->current_width, *ctx->current_height);
 
             // Resize video layer with physical pixel dimensions
-            if (*ctx->has_subsurface) {
-                float scale = SDL_GetWindowDisplayScale(ctx->window);
-                int physical_w = static_cast<int>(*ctx->current_width * scale);
-                int physical_h = static_cast<int>(*ctx->current_height * scale);
-                ctx->videoLayer->resize(physical_w, physical_h);
-            }
+            float scale = SDL_GetWindowDisplayScale(ctx->window);
+            int physical_w = static_cast<int>(*ctx->current_width * scale);
+            int physical_h = static_cast<int>(*ctx->current_height * scale);
+            ctx->videoRenderer->resize(physical_w, physical_h);
         }
 
-        // Pump CEF and render on EXPOSED events during live resize
+        // Render on EXPOSED events during live resize
         if (event->type == SDL_EVENT_WINDOW_EXPOSED && event->window.data1 == 1) {
-            // Pump CEF message loop - this allows CEF to deliver paint callbacks
+            // macOS uses external_message_pump - must pump CEF here during resize
             CefDoMessageLoopWork();
 
             // Render video if playing
-            if (*ctx->has_video && *ctx->has_subsurface && ctx->mpv->hasFrame()) {
-                VkImage sub_image;
-                VkImageView sub_view;
-                VkFormat sub_format;
-                if (ctx->videoLayer->startFrame(&sub_image, &sub_view, &sub_format)) {
-                    ctx->mpv->render(sub_image, sub_view,
-                                     ctx->videoLayer->width(), ctx->videoLayer->height(),
-                                     sub_format);
-                    ctx->videoLayer->submitFrame();
-                }
+            if (*ctx->has_video && ctx->videoRenderer->hasFrame()) {
+                ctx->videoRenderer->render(*ctx->current_width, *ctx->current_height);
             }
 
-            // Flush main browser paint buffer to compositor staging
-            {
-                std::lock_guard<std::mutex> lock(*ctx->paint_swap_mutex);
-                int read_idx = 1 - ctx->paint_write_idx->load(std::memory_order_acquire);
-                auto& buf = (*ctx->paint_buffers)[read_idx];
-                if (buf.dirty && !buf.data.empty()) {
-                    ctx->compositor->updateOverlayPartial(buf.data.data(), buf.width, buf.height);
-                    buf.dirty = false;
-                }
-            }
-
-            // Composite browser content
-            if (ctx->compositor->hasValidOverlay() || ctx->compositor->hasPendingContent()) {
-                ctx->compositor->composite(*ctx->current_width, *ctx->current_height, 1.0f);
-            }
-
-            if (*ctx->overlay_state != OverlayState::HIDDEN && *ctx->overlay_browser_alpha > 0.01f) {
-                // Flush overlay paint buffer
-                {
-                    std::lock_guard<std::mutex> lock(*ctx->overlay_paint_swap_mutex);
-                    int read_idx = 1 - ctx->overlay_paint_write_idx->load(std::memory_order_acquire);
-                    auto& buf = (*ctx->overlay_paint_buffers)[read_idx];
-                    if (buf.dirty && !buf.data.empty()) {
-                        ctx->overlay_compositor->updateOverlayPartial(buf.data.data(), buf.width, buf.height);
-                        buf.dirty = false;
-                    }
-                }
-                if (ctx->overlay_compositor->hasValidOverlay() || ctx->overlay_compositor->hasPendingContent()) {
-                    ctx->overlay_compositor->composite(*ctx->current_width, *ctx->current_height, *ctx->overlay_browser_alpha);
-                }
-            }
+            // Flush and composite all browsers (back-to-front order)
+            ctx->browsers->renderAll(*ctx->current_width, *ctx->current_height);
         }
 
         return true;
@@ -1360,163 +991,235 @@ int main(int argc, char* argv[]) {
     // Main loop - simplified (no Vulkan command buffers for main surface)
     bool running = true;
     bool needs_render = true;  // Render first frame
+    int slow_frame_count = 0;
     while (running && !client->isClosed()) {
-        auto now = Clock::now();
+        auto frame_start = Clock::now();
+        auto now = frame_start;
         bool activity_this_frame = false;
 
-        // Process mpv events (event-driven position/state updates)
-        mpvProcessEvents();
+#ifdef __APPLE__
+        // macOS: Pump CEF message loop from main thread
+        CefDoMessageLoopWork();
+#endif
+
+        // Process mpv events from event thread
+        for (const auto& ev : mpvEvents.drain()) {
+            switch (ev.type) {
+            case MpvEvent::Type::Position:
+                mediaSessionThread.setPosition(static_cast<int64_t>(ev.value * 1000.0));
+                break;
+            case MpvEvent::Type::Duration:
+                client->updateDuration(ev.value);
+                break;
+            case MpvEvent::Type::Playing:
+                client->emitPlaying();
+                mediaSessionThread.setPlaybackState(PlaybackState::Playing);
+                break;
+            case MpvEvent::Type::Paused:
+                if (mpv->isPlaying()) {
+                    if (ev.flag) {
+                        client->emitPaused();
+                        mediaSessionThread.setPlaybackState(PlaybackState::Paused);
+                    } else {
+                        client->emitPlaying();
+                        mediaSessionThread.setPlaybackState(PlaybackState::Playing);
+                    }
+                }
+                break;
+            case MpvEvent::Type::Finished:
+                LOG_INFO(LOG_MAIN, "Track finished naturally (EOF)");
+                has_video = false;
+                video_ready = false;
+#if !defined(_WIN32) && !defined(__APPLE__)
+                videoRenderThread.setActive(false);
+                videoRenderThread.resetVideoReady();
+#endif
+                videoRenderer.setVisible(false);
+                client->emitFinished();
+                mediaSessionThread.setPlaybackState(PlaybackState::Stopped);
+                break;
+            case MpvEvent::Type::Canceled:
+                LOG_DEBUG(LOG_MAIN, "Track canceled (user stop)");
+                has_video = false;
+                video_ready = false;
+#if !defined(_WIN32) && !defined(__APPLE__)
+                videoRenderThread.setActive(false);
+                videoRenderThread.resetVideoReady();
+#endif
+                videoRenderer.setVisible(false);
+                client->emitCanceled();
+                mediaSessionThread.setPlaybackState(PlaybackState::Stopped);
+                break;
+            case MpvEvent::Type::Seeked:
+                client->updatePosition(ev.value);
+                mediaSessionThread.setPosition(static_cast<int64_t>(ev.value * 1000.0));
+                mediaSessionThread.setRate(current_playback_rate);
+                mediaSessionThread.emitSeeked(static_cast<int64_t>(ev.value * 1000.0));
+                break;
+            case MpvEvent::Type::Buffering:
+                mediaSessionThread.setPosition(static_cast<int64_t>(ev.value * 1000.0));
+                mediaSessionThread.setRate(ev.flag ? 0.0 : current_playback_rate);
+                break;
+            case MpvEvent::Type::CoreIdle:
+                mediaSessionThread.setPosition(static_cast<int64_t>(ev.value * 1000.0));
+                break;
+            case MpvEvent::Type::BufferedRanges: {
+                std::string json = "[";
+                for (size_t i = 0; i < ev.ranges.size(); i++) {
+                    if (i > 0) json += ",";
+                    json += "{\"start\":" + std::to_string(ev.ranges[i].first) +
+                            ",\"end\":" + std::to_string(ev.ranges[i].second) + "}";
+                }
+                json += "]";
+                client->executeJS("if(window._nativeUpdateBufferedRanges)window._nativeUpdateBufferedRanges(" + json + ");");
+                break;
+            }
+            case MpvEvent::Type::Error:
+                LOG_ERROR(LOG_MAIN, "Playback error: %s", ev.error.c_str());
+                has_video = false;
+                video_ready = false;
+#if !defined(_WIN32) && !defined(__APPLE__)
+                videoRenderThread.setActive(false);
+                videoRenderThread.resetVideoReady();
+#endif
+                videoRenderer.setVisible(false);
+                client->emitError(ev.error);
+                mediaSessionThread.setPlaybackState(PlaybackState::Stopped);
+                break;
+            }
+        }
 
         if (!focus_set) {
             window_state.notifyFocusGained();
             focus_set = true;
         }
 
-        // Process media session events
-        mediaSession.update();
-
         // Event-driven: wait for events when idle, poll when active
-        bool has_pending = compositor.hasPendingContent() || overlay_compositor.hasPendingContent();
+        bool has_pending = browsers.anyHasPendingContent();
         SDL_Event event;
         bool have_event;
         if (needs_render || has_video || has_pending || !paint_size_matched) {
             have_event = SDL_PollEvent(&event);
         } else {
-            // Short wait - just yield CPU, don't block long (1ms for ~1000Hz max)
-            have_event = SDL_WaitEventTimeout(&event, 1);
+            // Idle: block until SDL event (input, window, or custom wake from CEF paint)
+            have_event = SDL_WaitEvent(&event);
         }
 
         while (have_event) {
-            if (event.type == SDL_EVENT_QUIT) running = false;
-            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !menu.isOpen()) running = false;
-#ifdef __APPLE__
-            // Cmd+Q to quit on macOS (no menu bar to provide this)
-            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_Q &&
-                (SDL_GetModState() & SDL_KMOD_GUI)) {
+            switch (event.type) {
+            case SDL_EVENT_QUIT:
                 running = false;
-            }
-#endif
+                break;
 
-            if (event.type == SDL_EVENT_MOUSE_MOTION ||
-                event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
-                event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
-                event.type == SDL_EVENT_MOUSE_WHEEL ||
-                event.type == SDL_EVENT_KEY_DOWN ||
-                event.type == SDL_EVENT_KEY_UP ||
-                event.type == SDL_EVENT_FINGER_DOWN ||
-                event.type == SDL_EVENT_FINGER_UP ||
-                event.type == SDL_EVENT_FINGER_MOTION) {
+            // Input events - set activity flag and route through input stack
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_WHEEL:
+            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_UP:
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_UP:
+            case SDL_EVENT_FINGER_MOTION:
                 activity_this_frame = true;
-            }
-
-            // Route input through layer stack
-            if (event.type == SDL_EVENT_MOUSE_MOTION ||
-                event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
-                event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
-                event.type == SDL_EVENT_MOUSE_WHEEL ||
-                event.type == SDL_EVENT_KEY_DOWN ||
-                event.type == SDL_EVENT_KEY_UP ||
-                event.type == SDL_EVENT_TEXT_INPUT ||
-                event.type == SDL_EVENT_FINGER_DOWN ||
-                event.type == SDL_EVENT_FINGER_UP ||
-                event.type == SDL_EVENT_FINGER_MOTION) {
+                [[fallthrough]];
+            case SDL_EVENT_TEXT_INPUT:
                 input_stack.route(event);
-            }
+                // Handle special key combinations
+                if (event.type == SDL_EVENT_KEY_DOWN) {
+                    if (event.key.key == SDLK_ESCAPE && !menu.isOpen()) {
+                        running = false;
+                    }
+#ifdef __APPLE__
+                    // Cmd+Q to quit on macOS (no menu bar to provide this)
+                    if (event.key.key == SDLK_Q && (SDL_GetModState() & SDL_KMOD_GUI)) {
+                        running = false;
+                    }
+#endif
+                }
+                break;
 
-            // Window events handled separately
-            if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+            // Window events
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 window_state.notifyFocusGained();
                 // Sync browser fullscreen with SDL state on focus gain (WM may have changed it)
-                bool isFs = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
-                if (isFs) {
+                if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) {
                     client->executeJS("document.documentElement.requestFullscreen().catch(()=>{});");
                 } else {
                     client->exitFullscreen();
                 }
-            } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+                break;
+
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
                 window_state.notifyFocusLost();
-            } else if (event.type == SDL_EVENT_WINDOW_MINIMIZED) {
+                break;
+
+            case SDL_EVENT_WINDOW_MINIMIZED:
                 window_state.notifyMinimized();
-            } else if (event.type == SDL_EVENT_WINDOW_RESTORED) {
+                break;
+
+            case SDL_EVENT_WINDOW_RESTORED:
                 window_state.notifyRestored();
+                break;
+
 #ifdef __APPLE__
-            } else if (event.type == SDL_EVENT_WINDOW_EXPOSED && !window_activated) {
-                // Activate window once it's actually visible on screen
-                activateMacWindow(window);
-                window_activated = true;
+            case SDL_EVENT_WINDOW_EXPOSED:
+                if (!window_activated) {
+                    activateMacWindow(window);
+                    window_activated = true;
+                }
+                break;
 #endif
-            } else if (event.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN) {
-                // WM initiated fullscreen - track source and sync browser state
+
+            case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
                 LOG_DEBUG(LOG_WINDOW, "Fullscreen: SDL enter, source=%d", static_cast<int>(fullscreen_source));
                 if (fullscreen_source == FullscreenSource::NONE) {
                     fullscreen_source = FullscreenSource::WM;
                 }
                 client->executeJS("document.documentElement.requestFullscreen().catch(()=>{});");
-            } else if (event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
-                // WM exited fullscreen - always sync browser, only clear source if WM initiated
+                break;
+
+            case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
                 LOG_DEBUG(LOG_WINDOW, "Fullscreen: SDL leave, source=%d", static_cast<int>(fullscreen_source));
                 client->exitFullscreen();
                 if (fullscreen_source == FullscreenSource::WM) {
                     fullscreen_source = FullscreenSource::NONE;
                 }
-            } else if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+                break;
+
+            case SDL_EVENT_WINDOW_RESIZED: {
                 paint_size_matched = false;  // Keep rendering until paint matches new size
                 current_width = event.window.data1;
                 current_height = event.window.data2;
-                overlay_browser_layer.setWindowSize(current_width, current_height);
-                main_browser_layer.setWindowSize(current_width, current_height);
 
-#ifdef __APPLE__
-                // Resize Metal compositor and video layer
+                // Get physical dimensions for compositor resize
                 int physical_w, physical_h;
                 SDL_GetWindowSizeInPixels(window, &physical_w, &physical_h);
-                compositor.resize(physical_w, physical_h);
-                overlay_compositor.resize(physical_w, physical_h);
-                client->resize(current_width, current_height);
-                overlay_client->resize(current_width, current_height);
 
-                if (has_subsurface) {
-                    videoLayer.resize(physical_w, physical_h);
-                }
+                // Resize all browsers and compositors via BrowserStack
+                browsers.resizeAll(current_width, current_height, physical_w, physical_h);
+
+#ifdef __APPLE__
+                videoRenderer.resize(physical_w, physical_h);
 #elif defined(_WIN32)
                 // Resize WGL context
                 wgl.resize(current_width, current_height);
-                compositor.resize(current_width, current_height);
-                overlay_compositor.resize(current_width, current_height);
-                client->resize(current_width, current_height);
-                overlay_client->resize(current_width, current_height);
                 video_needs_rerender = true;  // Force video rerender on resize
 #else
-                // Resize EGL context and compositors with physical dimensions
-                int physical_w, physical_h;
-                SDL_GetWindowSizeInPixels(window, &physical_w, &physical_h);
+                // Resize EGL context
                 egl.resize(physical_w, physical_h);
-                compositor.resize(physical_w, physical_h);
-                overlay_compositor.resize(physical_w, physical_h);
-                client->resize(current_width, current_height);
-                overlay_client->resize(current_width, current_height);
 
-                // Resize video layer (Wayland only - X11 uses OpenGL composition)
-                if (has_subsurface) {
-                    int video_w, video_h;
-                    SDL_GetWindowSizeInPixels(window, &video_w, &video_h);
-                    vkDeviceWaitIdle(waylandSubsurface.vkDevice());
-                    waylandSubsurface.recreateSwapchain(video_w, video_h);
-                    waylandSubsurface.setDestinationSize(current_width, current_height);
-                }
-                video_needs_rerender = true;  // Force render even when paused
+                // Resize video layer on render thread (no-op for X11/OpenGL)
+                videoRenderThread.requestResize(physical_w, physical_h);
+                videoRenderer.setDestinationSize(current_width, current_height);
 
-                // Pump CEF at max 60fps during resize to avoid overwhelming it
-                auto now_resize = Clock::now();
-                last_resize_time = now_resize;
-                auto since_pump = std::chrono::duration_cast<std::chrono::milliseconds>(now_resize - last_resize_pump).count();
-                if (since_pump >= 16) {
-                    CefDoMessageLoopWork();
-                    last_resize_pump = now_resize;
-                }
+                // Track resize time for paint matching
+                last_resize_time = Clock::now();
 #endif
+                break;
+            }
 
-            } else if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+            case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
                 float new_scale = SDL_GetWindowDisplayScale(window);
 
                 // Resize window to maintain same physical size
@@ -1535,55 +1238,22 @@ int main(int argc, char* argv[]) {
                 int physical_w, physical_h;
                 SDL_GetWindowSizeInPixels(window, &physical_w, &physical_h);
 
-                // Resize compositors to new physical dimensions
-                compositor.resize(physical_w, physical_h);
-                overlay_compositor.resize(physical_w, physical_h);
+                // Resize all browsers and compositors, notify of scale change
+                browsers.resizeAll(new_logical_w, new_logical_h, physical_w, physical_h);
+                browsers.notifyAllScreenInfoChanged();
+                break;
+            }
 
-                // Update CEF clients with new logical size and notify of scale change
-                client->resize(new_logical_w, new_logical_h);
-                overlay_client->resize(new_logical_w, new_logical_h);
-                if (client->browser()) {
-                    client->browser()->GetHost()->NotifyScreenInfoChanged();
-                }
-                if (overlay_client->browser()) {
-                    overlay_client->browser()->GetHost()->NotifyScreenInfoChanged();
-                }
+            default:
+                break;
             }
             have_event = SDL_PollEvent(&event);
         }
 
-#ifndef _WIN32
-        // macOS/Linux: external_message_pump - call CefDoMessageLoopWork when CEF requests it
-        if (App::NeedsWork()) {
-            int64_t delay_ms = App::GetWorkDelay();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_cef_work).count();
-            if (delay_ms == 0 || elapsed >= delay_ms) {
-                CefDoMessageLoopWork();
-                last_cef_work = Clock::now();
-            }
-        }
-        // Also pump periodically to ensure responsiveness (matches display refresh rate)
-        {
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - last_cef_work).count();
-            if (elapsed >= cef_pump_interval_ms) {
-                CefDoMessageLoopWork();
-                last_cef_work = Clock::now();
-            }
-        }
-#endif
+        // CEF runs on its own thread - no pump needed here
 
         // Determine if we need to render this frame
-        needs_render = activity_this_frame || has_video || compositor.hasPendingContent() || overlay_state == OverlayState::FADING;
-#ifndef _WIN32
-        // Keep rendering after resize until texture updates or 5 seconds pass
-        auto since_resize = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_resize_time).count();
-        bool resize_pending = since_resize < 5000 && !paint_size_matched;
-        if (resize_pending) {
-            needs_render = true;
-            client->forceRepaint();
-            CefDoMessageLoopWork();
-        }
-#endif
+        needs_render = activity_this_frame || has_video || browsers.anyHasPendingContent() || overlay_state == OverlayState::FADING;
 
         // Process player commands
         {
@@ -1596,82 +1266,82 @@ int main(int argc, char* argv[]) {
                     if (!cmd.metadata.empty() && cmd.metadata != "{}") {
                         MediaMetadata meta = parseMetadataJson(cmd.metadata);
                         LOG_DEBUG(LOG_MAIN, "metadata: title=%s artist=%s", meta.title.c_str(), meta.artist.c_str());
-                        mediaSession.setMetadata(meta);
+                        mediaSessionThread.setMetadata(meta);
                         // Apply normalization gain (ReplayGain) if present
                         bool hasGain = false;
                         double normGain = jsonGetDouble(cmd.metadata, "NormalizationGain", &hasGain);
-                        mpvSetNormalizationGain(hasGain ? normGain : 0.0);
+                        mpv->setNormalizationGain(hasGain ? normGain : 0.0);
                     } else {
-                        mpvSetNormalizationGain(0.0);  // Clear any previous gain
+                        mpv->setNormalizationGain(0.0);  // Clear any previous gain
                     }
-                    if (mpvLoadFile(cmd.url, startSec)) {
+                    if (mpv->loadFile(cmd.url, startSec)) {
                         has_video = true;
-#ifdef __APPLE__
-                        if (has_subsurface && videoLayer.isHdr()) {
-                            // macOS EDR is automatic
+                        LOG_INFO(LOG_MAIN, "Video loaded, has_video=true");
+#if !defined(_WIN32) && !defined(__APPLE__)
+                        videoRenderThread.setActive(true);
+                        if (videoRenderer.isHdr()) {
+                            videoRenderThread.requestSetColorspace();
                         }
-#elif defined(_WIN32)
-                        // Windows HDR is automatic via DXGI colorspace
 #else
-                        if (has_subsurface && is_hdr && useWayland) {
-                            waylandSubsurface.setColorspace();
+                        if (videoRenderer.isHdr()) {
+                            videoRenderer.setColorspace();
                         }
 #endif
                         // Apply initial subtitle track if specified
                         int subIdx = jsonGetIntDefault(cmd.metadata, "_subIdx", -1);
                         if (subIdx >= 0) {
-                            mpvSetSubtitleTrack(subIdx);
+                            mpv->setSubtitleTrack(subIdx);
                         }
                         // Apply initial audio track if specified
                         int audioIdx = jsonGetIntDefault(cmd.metadata, "_audioIdx", -1);
                         if (audioIdx >= 0) {
-                            mpvSetAudioTrack(audioIdx);
+                            mpv->setAudioTrack(audioIdx);
                         }
                         // mpv events will trigger state callbacks
                     } else {
                         client->emitError("Failed to load video");
                     }
                 } else if (cmd.cmd == "stop") {
-                    mpvStop();
+                    mpv->stop();
                     has_video = false;
                     video_ready = false;
-#if !defined(__APPLE__) && !defined(_WIN32)
-                    if (has_subsurface) {
-                        waylandSubsurface.setVisible(false);
-                    }
+#if !defined(_WIN32) && !defined(__APPLE__)
+                    videoRenderThread.setActive(false);
+                    videoRenderThread.resetVideoReady();
 #endif
+                    videoRenderer.setVisible(false);
                     // mpv END_FILE event will trigger finished callback
                 } else if (cmd.cmd == "pause") {
-                    mpvPause();
+                    mpv->pause();
                     // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "play") {
-                    mpvPlay();
+                    mpv->play();
                     // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "playpause") {
-                    if (mpvIsPaused()) {
-                        mpvPlay();
+                    if (mpv->isPaused()) {
+                        mpv->play();
                     } else {
-                        mpvPause();
+                        mpv->pause();
                     }
                     // mpv pause property change will trigger state callback
                 } else if (cmd.cmd == "seek") {
-                    mpvSeek(static_cast<double>(cmd.intArg) / 1000.0);
+                    mpv->seek(static_cast<double>(cmd.intArg) / 1000.0);
                 } else if (cmd.cmd == "volume") {
-                    mpvSetVolume(cmd.intArg);
+                    mpv->setVolume(cmd.intArg);
                 } else if (cmd.cmd == "mute") {
-                    mpvSetMuted(cmd.intArg != 0);
+                    mpv->setMuted(cmd.intArg != 0);
                 } else if (cmd.cmd == "speed") {
                     double speed = cmd.intArg / 1000.0;
-                    mpvSetSpeed(speed);
+                    mpv->setSpeed(speed);
                 } else if (cmd.cmd == "subtitle") {
-                    mpvSetSubtitleTrack(cmd.intArg);
+                    mpv->setSubtitleTrack(cmd.intArg);
                 } else if (cmd.cmd == "audio") {
-                    mpvSetAudioTrack(cmd.intArg);
+                    mpv->setAudioTrack(cmd.intArg);
                 } else if (cmd.cmd == "audioDelay") {
                     if (!cmd.metadata.empty()) {
                         try {
                             double delay = std::stod(cmd.metadata);
-                            mpvSetAudioDelay(delay);
+                            mpv->setAudioDelay(delay);
                         } catch (...) {
                             LOG_WARN(LOG_MAIN, "Invalid audioDelay value: %s", cmd.metadata.c_str());
                         }
@@ -1679,36 +1349,36 @@ int main(int argc, char* argv[]) {
                 } else if (cmd.cmd == "media_metadata") {
                     MediaMetadata meta = parseMetadataJson(cmd.url);
                     LOG_DEBUG(LOG_MAIN, "Media metadata: title=%s", meta.title.c_str());
-                    mediaSession.setMetadata(meta);
+                    mediaSessionThread.setMetadata(meta);
                 } else if (cmd.cmd == "media_position") {
                     int64_t pos_us = static_cast<int64_t>(cmd.intArg) * 1000;
-                    mediaSession.setPosition(pos_us);
+                    mediaSessionThread.setPosition(pos_us);
                 } else if (cmd.cmd == "media_state") {
                     if (cmd.url == "Playing") {
-                        mediaSession.setPlaybackState(PlaybackState::Playing);
+                        mediaSessionThread.setPlaybackState(PlaybackState::Playing);
                     } else if (cmd.url == "Paused") {
-                        mediaSession.setPlaybackState(PlaybackState::Paused);
+                        mediaSessionThread.setPlaybackState(PlaybackState::Paused);
                     } else {
-                        mediaSession.setPlaybackState(PlaybackState::Stopped);
+                        mediaSessionThread.setPlaybackState(PlaybackState::Stopped);
                     }
                 } else if (cmd.cmd == "media_artwork") {
                     LOG_DEBUG(LOG_MAIN, "Media artwork received: %.50s...", cmd.url.c_str());
-                    mediaSession.setArtwork(cmd.url);
+                    mediaSessionThread.setArtwork(cmd.url);
                 } else if (cmd.cmd == "media_queue") {
                     // Decode flags: bit 0 = canNext, bit 1 = canPrev
                     bool canNext = (cmd.intArg & 1) != 0;
                     bool canPrev = (cmd.intArg & 2) != 0;
-                    mediaSession.setCanGoNext(canNext);
-                    mediaSession.setCanGoPrevious(canPrev);
+                    mediaSessionThread.setCanGoNext(canNext);
+                    mediaSessionThread.setCanGoPrevious(canPrev);
                 } else if (cmd.cmd == "media_notify_rate") {
                     // Rate was encoded as rate * 1000000
                     double rate = static_cast<double>(cmd.intArg) / 1000000.0;
                     current_playback_rate = rate;
-                    mediaSession.setRate(rate);
+                    mediaSessionThread.setRate(rate);
                 } else if (cmd.cmd == "media_seeked") {
                     // JS detected a seek - emit Seeked signal to media session
                     int64_t pos_us = static_cast<int64_t>(cmd.intArg) * 1000;
-                    mediaSession.emitSeeked(pos_us);
+                    mediaSessionThread.emitSeeked(pos_us);
                 } else if (cmd.cmd == "media_action") {
                     // Route media session control commands to JS playbackManager
                     std::string js = "if(window._nativeHostInput) window._nativeHostInput(['" + cmd.url + "']);";
@@ -1756,9 +1426,9 @@ int main(int argc, char* argv[]) {
                 // Switch input from overlay to main browser
                 window_state.remove(active_browser);
                 active_browser->onFocusLost();
-                input_stack.remove(&overlay_browser_layer);
-                input_stack.push(&main_browser_layer);
-                active_browser = &main_browser_layer;
+                input_stack.remove(browsers.getInputLayer("overlay"));
+                input_stack.push(browsers.getInputLayer("main"));
+                active_browser = browsers.getInputLayer("main");
                 window_state.add(active_browser);
                 active_browser->onFocusGained();
                 overlay_fade_start = now;
@@ -1769,12 +1439,21 @@ int main(int argc, char* argv[]) {
             float progress = elapsed / OVERLAY_FADE_DURATION_SEC;
             if (progress >= 1.0f) {
                 overlay_browser_alpha = 0.0f;
+                browsers.setAlpha("overlay", 0.0f);
                 overlay_state = OverlayState::HIDDEN;
-                // Hide overlay view so old content doesn't show through
-                overlay_compositor.setVisible(false);
+                // Hide compositor layer and close browser
+                if (auto* entry = browsers.get("overlay")) {
+                    entry->compositor->setVisible(false);
+                    if (entry->getBrowser) {
+                        if (auto browser = entry->getBrowser()) {
+                            browser->GetHost()->CloseBrowser(true);
+                        }
+                    }
+                }
                 LOG_DEBUG(LOG_OVERLAY, "State: FADING -> HIDDEN");
             } else {
                 overlay_browser_alpha = 1.0f - progress;
+                browsers.setAlpha("overlay", overlay_browser_alpha);
             }
         }
 
@@ -1783,159 +1462,100 @@ int main(int argc, char* argv[]) {
 
         // Render video to subsurface/layer
 #ifdef __APPLE__
-        if (has_video && has_subsurface && mpv.hasFrame()) {
-            VkImage sub_image;
-            VkImageView sub_view;
-            VkFormat sub_format;
-            if (videoLayer.startFrame(&sub_image, &sub_view, &sub_format)) {
-                mpv.render(sub_image, sub_view,
-                          videoLayer.width(), videoLayer.height(),
-                          sub_format);
-                videoLayer.submitFrame();
-                video_ready = true;
+        if (has_video) {
+            bool hasFrame = videoRenderer.hasFrame();
+            static int frame_log_count = 0;
+            if (hasFrame) {
+                if (videoRenderer.render(current_width, current_height)) {
+                    video_ready = true;
+                    if (frame_log_count++ < 5) {
+                        LOG_INFO(LOG_MAIN, "Video frame rendered (count=%d)", frame_log_count);
+                    }
+                }
             }
         }
 
-        flushPaintBuffer();
-        compositor.importQueuedIOSurface();
-
-        // Composite main browser (Metal handles its own presentation)
-        // Always call composite() - it handles "no content yet" internally and uploads staging data
-        if (compositor.hasValidOverlay() || compositor.hasPendingContent()) {
-            compositor.composite(current_width, current_height, 1.0f);
-        }
-
-        // Composite overlay browser (with fade alpha)
-        if (overlay_state != OverlayState::HIDDEN && overlay_browser_alpha > 0.01f) {
-            flushOverlayPaintBuffer();
-            overlay_compositor.importQueuedIOSurface();
-            if (overlay_compositor.hasValidOverlay() || overlay_compositor.hasPendingContent()) {
-                overlay_compositor.composite(current_width, current_height, overlay_browser_alpha);
-            }
-        }
+        // Flush and composite all browsers (back-to-front order)
+        browsers.renderAll(current_width, current_height);
 #elif defined(_WIN32)
         // Windows: OpenGL mpv rendering directly to default framebuffer
-        flushPaintBuffer();
-        compositor.flushOverlay();
-
-        // Clear to background color
-        glClearColor(clear_color, clear_color, clear_color, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
         // Render video first (underneath the browser UI)
-        if (has_video && (mpv.hasFrame() || video_needs_rerender)) {
-            mpv.render(current_width, current_height, 0);
+        if (has_video && (videoRenderer.hasFrame() || video_needs_rerender)) {
+            videoRenderer.render(current_width, current_height);
             video_ready = true;
             video_needs_rerender = false;
         }
 
-        // Composite main browser on top of video
-        if (compositor.hasValidOverlay()) {
-            compositor.composite(current_width, current_height, 1.0f);
-        }
+        // Clear and composite
+        frameContext.beginFrame(clear_color, videoRenderer.getClearAlpha(video_ready));
 
-        // Composite overlay browser (with fade alpha)
-        if (overlay_state != OverlayState::HIDDEN && overlay_browser_alpha > 0.01f) {
-            flushOverlayPaintBuffer();
-            overlay_compositor.flushOverlay();
-            if (overlay_compositor.hasValidOverlay()) {
-                overlay_compositor.composite(current_width, current_height, overlay_browser_alpha);
-            }
-        }
+        // Flush and composite all browsers (back-to-front order)
+        browsers.renderAll(current_width, current_height);
 
-        wgl.swapBuffers();
+        frameContext.endFrame();
 #else
-        // Linux: Different rendering paths for Wayland vs X11
+        // Linux: Unified rendering for Wayland and X11 using abstractions
         // Get physical dimensions for viewport (HiDPI)
         float frame_scale = SDL_GetWindowDisplayScale(window);
         int viewport_w = static_cast<int>(current_width * frame_scale);
         int viewport_h = static_cast<int>(current_height * frame_scale);
+        glViewport(0, 0, viewport_w, viewport_h);
 
-        if (useWayland) {
-            // Wayland: Render video to separate Vulkan subsurface
-            if (has_subsurface && ((has_video && mpvVk.hasFrame()) || video_needs_rerender)) {
-                VkImage sub_image;
-                VkImageView sub_view;
-                VkFormat sub_format;
-                if (waylandSubsurface.startFrame(&sub_image, &sub_view, &sub_format)) {
-                    mpvVk.render(sub_image, sub_view,
-                                waylandSubsurface.width(), waylandSubsurface.height(),
-                                sub_format);
-                    waylandSubsurface.submitFrame();
-                    video_ready = true;
-                    video_needs_rerender = false;
-                }
-            }
+        // Update video render dimensions (thread renders when frames available)
+        videoRenderThread.setDimensions(viewport_w, viewport_h);
 
-            flushPaintBuffer();
-            compositor.importQueuedDmabuf();
-            compositor.flushOverlay();
+        // Clear (alpha depends on renderer type and whether video is ready)
+        frameContext.beginFrame(clear_color, videoRenderer.getClearAlpha(videoRenderThread.isVideoReady()));
 
-            // Clear main surface (transparent when video ready, bg color otherwise)
-            glViewport(0, 0, viewport_w, viewport_h);
-            float bg_alpha = video_ready ? 0.0f : 1.0f;
-            glClearColor(clear_color, clear_color, clear_color, bg_alpha);
-            glClear(GL_COLOR_BUFFER_BIT);
-        } else {
-            // X11: OpenGL composition (like Windows) - render video and CEF to same surface
-            flushPaintBuffer();
-            compositor.importQueuedDmabuf();
-            compositor.flushOverlay();
+        // Flush and composite all browsers (back-to-front order)
+        browsers.renderAll(viewport_w, viewport_h);
 
-            // Clear to background color
-            glViewport(0, 0, viewport_w, viewport_h);
-            glClearColor(clear_color, clear_color, clear_color, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            // Render video first (underneath the browser UI)
-            if (has_video && (mpvGl.hasFrame() || video_needs_rerender)) {
-                mpvGl.render(viewport_w, viewport_h, 0);
-                video_ready = true;
-                video_needs_rerender = false;
-            }
-        }
-
-        // Composite main browser (always full opacity when no video)
-        if (compositor.hasValidOverlay()) {
-            compositor.composite(viewport_w, viewport_h, 1.0f);
-        }
-
-        // Composite overlay browser (with fade alpha)
-        if (overlay_state != OverlayState::HIDDEN && overlay_browser_alpha > 0.01f) {
-            flushOverlayPaintBuffer();
-            overlay_compositor.importQueuedDmabuf();
-            overlay_compositor.flushOverlay();
-            if (overlay_compositor.hasValidOverlay()) {
-                overlay_compositor.composite(viewport_w, viewport_h, overlay_browser_alpha);
-            }
-        }
-
-        // Swap buffers
-        egl.swapBuffers();
+        frameContext.endFrame();
 #endif
+        // Log slow frames
+        auto frame_end = Clock::now();
+        auto frame_ms = std::chrono::duration<double, std::milli>(frame_end - frame_start).count();
+        if (frame_ms > 50.0 && has_video) {
+            slow_frame_count++;
+            if (slow_frame_count <= 10) {
+                LOG_WARN(LOG_MAIN, "Slow frame: %.1fms (has_video=%d)", frame_ms, has_video);
+            }
+        }
     }
 
     // Cleanup
 #ifdef __APPLE__
     SDL_RemoveEventWatch(liveResizeCallback, &live_resize_ctx);
 #endif
-    mpvCleanup();
-    compositor.cleanup();
-    overlay_compositor.cleanup();
+    mediaSessionThread.stop();
+#if !defined(_WIN32) && !defined(__APPLE__)
+    videoRenderThread.stop();
+#endif
+    mpvEvents.stop();
+    mpv->cleanup();
+
 #ifdef __APPLE__
-    if (has_subsurface) {
-        videoLayer.cleanup();
+    // macOS: simpler cleanup - CefShutdown handles browser cleanup
+    browsers.cleanupCompositors();
+    videoRenderer.cleanup();
+    VideoStack::cleanupStatics();
+    CefShutdown();
+#else
+    // Windows/Linux: wait for async browser close before cleanup
+    browsers.closeAllBrowsers();
+    while (!browsers.allBrowsersClosed()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-#elif defined(_WIN32)
+    browsers.cleanupCompositors();
+    videoRenderer.cleanup();
+    VideoStack::cleanupStatics();
+#ifdef _WIN32
     wgl.cleanup();
 #else
-    if (has_subsurface) {
-        waylandSubsurface.cleanup();
-    }
     egl.cleanup();
 #endif
-
-    CefShutdown();
+    cefThread.shutdown();
+#endif
     shutdownStderrCapture();
     shutdownLogging();
     if (current_cursor) {

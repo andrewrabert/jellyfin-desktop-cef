@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mpv_player.h"
 #include "context/vulkan_context.h"
 #ifdef __APPLE__
 #include "platform/macos_layer.h"
@@ -11,84 +12,69 @@ using VideoSurface = WindowsVideoLayer;
 #include "platform/video_surface.h"
 // VideoSurface is now an abstract base class on Linux
 #endif
-#include <string>
-#include <functional>
 #include <atomic>
-#include <vector>
 
 struct mpv_handle;
 struct mpv_render_context;
 
-class MpvPlayerVk {
+class MpvPlayerVk : public MpvPlayer {
 public:
-    using RedrawCallback = std::function<void()>;
-    // Event callbacks (like Qt signals)
-    using PositionCallback = std::function<void(double ms)>;
-    using DurationCallback = std::function<void(double ms)>;
-    using StateCallback = std::function<void(bool paused)>;
-    using PlaybackCallback = std::function<void()>;  // playing, finished, error
-    using SeekCallback = std::function<void(double ms)>;  // seek completed with position
-    using BufferingCallback = std::function<void(bool buffering, double ms)>;
-    using CoreIdleCallback = std::function<void(bool idle, double ms)>;
-    // Buffered range in ticks (100ns units, matching jellyfin-web)
-    struct BufferedRange { int64_t start; int64_t end; };
-    using BufferedRangesCallback = std::function<void(const std::vector<BufferedRange>&)>;
-    using ErrorCallback = std::function<void(const std::string& error)>;
 
     MpvPlayerVk();
-    ~MpvPlayerVk();
+    ~MpvPlayerVk() override;
 
     bool init(VulkanContext* vk, VideoSurface* subsurface = nullptr);
-    void cleanup();
-    bool loadFile(const std::string& path, double startSeconds = 0.0);
+    void cleanup() override;
+    bool loadFile(const std::string& path, double startSeconds = 0.0) override;
 
     // Process pending mpv events (call from main loop)
-    void processEvents();
+    void processEvents() override;
 
     // Check if mpv has a new frame ready to render
-    bool hasFrame() const;
+    bool hasFrame() const override;
 
     // Render to swapchain image
     void render(VkImage image, VkImageView view, uint32_t width, uint32_t height, VkFormat format);
 
     // Playback control
-    void stop();
-    void pause();
-    void play();
-    void seek(double seconds);
-    void setVolume(int volume);
-    void setMuted(bool muted);
-    void setSpeed(double speed);
-    void setNormalizationGain(double gainDb);  // ReplayGain/normalization in dB
-    void setSubtitleTrack(int sid);  // -1 = off, 1+ = track index
-    void setAudioTrack(int aid);     // -1 = off, 1+ = track index
-    void setAudioDelay(double seconds);  // positive = audio later, negative = audio earlier
+    void stop() override;
+    void pause() override;
+    void play() override;
+    void seek(double seconds) override;
+    void setVolume(int volume) override;
+    void setMuted(bool muted) override;
+    void setSpeed(double speed) override;
+    void setNormalizationGain(double gainDb) override;
+    void setSubtitleTrack(int sid) override;
+    void setAudioTrack(int aid) override;
+    void setAudioDelay(double seconds) override;
 
     // State queries
-    double getPosition() const;
-    double getDuration() const;
-    double getSpeed() const;
-    bool isPaused() const;
-    bool isPlaying() const { return playing_; }
+    double getPosition() const override;
+    double getDuration() const override;
+    double getSpeed() const override;
+    bool isPaused() const override;
+    bool isPlaying() const override { return playing_; }
+    bool needsRedraw() const override { return needs_redraw_.load(); }
+    void clearRedrawFlag() override { needs_redraw_ = false; }
 
-    void setRedrawCallback(RedrawCallback cb) { redraw_callback_ = cb; }
-    bool needsRedraw() const { return needs_redraw_.load(); }
-    void clearRedrawFlag() { needs_redraw_ = false; }
+    void setRedrawCallback(RedrawCallback cb) override { redraw_callback_ = cb; }
 
     // Event callbacks (set these to receive mpv events)
-    void setPositionCallback(PositionCallback cb) { on_position_ = cb; }
-    void setDurationCallback(DurationCallback cb) { on_duration_ = cb; }
-    void setStateCallback(StateCallback cb) { on_state_ = cb; }
-    void setPlayingCallback(PlaybackCallback cb) { on_playing_ = cb; }
-    void setFinishedCallback(PlaybackCallback cb) { on_finished_ = cb; }
-    void setCanceledCallback(PlaybackCallback cb) { on_canceled_ = cb; }
-    void setSeekedCallback(SeekCallback cb) { on_seeked_ = cb; }
-    void setBufferingCallback(BufferingCallback cb) { on_buffering_ = cb; }
-    void setCoreIdleCallback(CoreIdleCallback cb) { on_core_idle_ = cb; }
-    void setBufferedRangesCallback(BufferedRangesCallback cb) { on_buffered_ranges_ = cb; }
-    void setErrorCallback(ErrorCallback cb) { on_error_ = cb; }
+    void setPositionCallback(PositionCallback cb) override { on_position_ = cb; }
+    void setDurationCallback(DurationCallback cb) override { on_duration_ = cb; }
+    void setStateCallback(StateCallback cb) override { on_state_ = cb; }
+    void setPlayingCallback(PlaybackCallback cb) override { on_playing_ = cb; }
+    void setFinishedCallback(PlaybackCallback cb) override { on_finished_ = cb; }
+    void setCanceledCallback(PlaybackCallback cb) override { on_canceled_ = cb; }
+    void setSeekedCallback(SeekCallback cb) override { on_seeked_ = cb; }
+    void setBufferingCallback(BufferingCallback cb) override { on_buffering_ = cb; }
+    void setCoreIdleCallback(CoreIdleCallback cb) override { on_core_idle_ = cb; }
+    void setBufferedRangesCallback(BufferedRangesCallback cb) override { on_buffered_ranges_ = cb; }
+    void setErrorCallback(ErrorCallback cb) override { on_error_ = cb; }
+    void setWakeupCallback(WakeupCallback cb) override { on_wakeup_ = cb; }
 
-    bool isHdr() const { return subsurface_ && subsurface_->isHdr(); }
+    bool isHdr() const override { return subsurface_ && subsurface_->isHdr(); }
     VideoSurface* subsurface() const { return subsurface_; }
 
 private:
@@ -113,6 +99,7 @@ private:
     CoreIdleCallback on_core_idle_;
     BufferedRangesCallback on_buffered_ranges_;
     ErrorCallback on_error_;
+    WakeupCallback on_wakeup_;
 
     std::atomic<bool> needs_redraw_{false};
     std::atomic<bool> has_events_{false};

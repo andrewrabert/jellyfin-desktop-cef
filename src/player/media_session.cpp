@@ -46,3 +46,11 @@ void MediaSession::emitSeeked(int64_t position_us) {
 void MediaSession::update() {
     for (auto& b : backends_) b->update();
 }
+
+int MediaSession::getFd() {
+    for (auto& b : backends_) {
+        int fd = b->getFd();
+        if (fd >= 0) return fd;
+    }
+    return -1;
+}

@@ -72,6 +72,7 @@ if(APPLE)
         src/compositor/metal_compositor.mm
         src/player/media_session.cpp
         src/player/macos/media_session_macos.mm
+        src/player/vulkan_subsurface_renderer.cpp
     )
 
     # LetsMove - prompts user to move app to /Applications (clears quarantine)
@@ -92,6 +93,7 @@ elseif(WIN32)
 
     set(PLATFORM_SOURCES
         src/context/wgl_context.cpp
+        src/context/opengl_frame_context.cpp
         src/platform/windows_video_layer.cpp
         src/compositor/opengl_compositor.cpp
         src/player/media_session.cpp
@@ -155,11 +157,13 @@ else()
 
     set(PLATFORM_SOURCES
         src/context/egl_context.cpp
+        src/context/opengl_frame_context.cpp
         src/platform/wayland_subsurface.cpp
         src/platform/x11_video_layer.cpp
         src/compositor/opengl_compositor.cpp
         src/player/media_session.cpp
         src/player/mpris/media_session_mpris.cpp
+        src/player/vulkan_subsurface_renderer.cpp
         ${COLOR_MGMT_CODE_C}
         ${COLOR_MGMT_CLIENT_H}
         ${VIEWPORTER_CODE_C}
@@ -288,12 +292,19 @@ add_custom_target(embedded_resources DEPENDS ${EMBEDDED_RESOURCES_HEADER})
 set(COMMON_SOURCES
     src/main.cpp
     src/logging.cpp
+    src/browser/browser_stack.cpp
     src/cef/cef_app.cpp
     src/cef/cef_client.cpp
+    src/cef/cef_thread.cpp
     src/cef/resource_handler.cpp
     src/context/vulkan_context.cpp
     src/player/mpv/mpv_player_gl.cpp
     src/player/mpv/mpv_player_vk.cpp
+    src/player/opengl_renderer.cpp
+    src/player/video_stack.cpp
+    src/player/mpv_event_thread.cpp
+    src/player/video_render_thread.cpp
+    src/player/media_session_thread.cpp
     src/settings.cpp
     src/ui/menu_overlay.cpp
 )

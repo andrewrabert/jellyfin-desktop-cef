@@ -48,9 +48,9 @@ public:
     int deviceExtensionCount() const override;
 
     void commit();
-    void setColorspace();
+    void setColorspace() override;
     void setVisible(bool visible) override;
-    void setDestinationSize(int width, int height);  // Set logical display size for HiDPI
+    void setDestinationSize(int width, int height) override;
 
     // Wayland registry callbacks (public for C callback struct)
     static void registryGlobal(void* data, wl_registry* registry,

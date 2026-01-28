@@ -22,8 +22,11 @@ execute_process(
     ERROR_QUIET
     RESULT_VARIABLE GIT_RESULT
 )
-if(NOT GIT_RESULT EQUAL 0)
+if(NOT GIT_RESULT EQUAL 0 OR APP_GIT_HASH STREQUAL "")
     set(APP_GIT_HASH "")
+    set(HAS_GIT_HASH 0)
+else()
+    set(HAS_GIT_HASH 1)
 endif()
 
 set(SOURCE_EPOCH "$ENV{SOURCE_DATE_EPOCH}")
@@ -49,11 +52,16 @@ if(NOT "${APP_VERSION}" STREQUAL "${CACHED_VERSION}" OR
     file(WRITE "${VERSION_CACHE}" "${APP_VERSION}")
     file(WRITE "${HASH_CACHE}" "${APP_GIT_HASH}")
     file(WRITE "${EPOCH_CACHE}" "${SOURCE_EPOCH}")
+    if(HAS_GIT_HASH)
+        set(APP_VERSION_STRING "${APP_VERSION} (${APP_GIT_HASH})")
+    else()
+        set(APP_VERSION_STRING "${APP_VERSION}")
+    endif()
     file(WRITE "${VERSION_FILE}"
 "#pragma once
 
 #define APP_VERSION \"${APP_VERSION}\"
-#define APP_GIT_HASH \"${APP_GIT_HASH}\"
+#define APP_VERSION_STRING \"${APP_VERSION_STRING}\"
 ")
     message(STATUS "version.h updated: ${APP_VERSION} (${APP_GIT_HASH})")
 endif()

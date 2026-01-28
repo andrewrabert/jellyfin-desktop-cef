@@ -15,7 +15,7 @@ public:
     // Set device scale factor before CefInitialize
     void SetDeviceScaleFactor(float scale) { device_scale_factor_ = scale; }
 
-    // Check if CEF needs work done (for external_message_pump mode)
+    // Check if CEF needs work done (for external_message_pump mode on macOS)
     static bool NeedsWork() { return cef_work_pending_.exchange(false); }
     static int64_t GetWorkDelay() { return cef_work_delay_ms_; }
 

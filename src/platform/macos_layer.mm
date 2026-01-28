@@ -258,6 +258,14 @@ bool MacOSVideoLayer::createSwapchain(uint32_t width, uint32_t height) {
     // Update Metal layer size
     metal_layer_.drawableSize = CGSizeMake(width, height);
 
+    // Destroy old image views (swapchain is passed as oldSwapchain, Vulkan handles retirement)
+    for (uint32_t i = 0; i < image_count_; i++) {
+        if (image_views_[i] != VK_NULL_HANDLE) {
+            vkDestroyImageView(device_, image_views_[i], nullptr);
+            image_views_[i] = VK_NULL_HANDLE;
+        }
+    }
+
     // Query surface capabilities
     VkSurfaceCapabilitiesKHR capabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device_, surface_, &capabilities);
@@ -290,6 +298,8 @@ bool MacOSVideoLayer::createSwapchain(uint32_t width, uint32_t height) {
     }
 
     // Create swapchain
+    VkSwapchainKHR oldSwapchain = swapchain_;
+
     VkSwapchainCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.surface = surface_;
@@ -304,9 +314,15 @@ bool MacOSVideoLayer::createSwapchain(uint32_t width, uint32_t height) {
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = swapchain_;
+    createInfo.oldSwapchain = oldSwapchain;
 
     VkResult result = vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapchain_);
+
+    // Destroy old swapchain after new one is created (Vulkan retired it, but we must still destroy)
+    if (oldSwapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device_, oldSwapchain, nullptr);
+    }
+
     if (result != VK_SUCCESS) {
         NSLog(@"Failed to create swapchain: %d", result);
         return false;
@@ -385,11 +401,12 @@ bool MacOSVideoLayer::startFrame(VkImage* outImage, VkImageView* outView, VkForm
     VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
                                              image_available_, VK_NULL_HANDLE,
                                              &current_image_idx_);
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         needs_swapchain_recreate_ = true;
         return false;
     }
-    if (result != VK_SUCCESS) {
+    // VK_SUBOPTIMAL_KHR means image is usable - continue (MoltenVK often returns this)
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         return false;
     }
 

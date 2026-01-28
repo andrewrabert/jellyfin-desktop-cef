@@ -53,6 +53,8 @@ public:
     void setPosition(int x, int y);
 
     bool isHdr() const { return is_hdr_; }
+    void setColorspace() {}  // macOS EDR is automatic
+    void setDestinationSize(int, int) {}  // no-op on macOS
 
     // For mpv render context
 #ifdef __OBJC__

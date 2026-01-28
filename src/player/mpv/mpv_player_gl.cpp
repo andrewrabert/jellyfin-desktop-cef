@@ -37,6 +37,7 @@ void MpvPlayerGL::onMpvRedraw(void* ctx) {
 void MpvPlayerGL::onMpvWakeup(void* ctx) {
     MpvPlayerGL* player = static_cast<MpvPlayerGL*>(ctx);
     player->has_events_ = true;
+    if (player->on_wakeup_) player->on_wakeup_();
 }
 
 void MpvPlayerGL::processEvents() {

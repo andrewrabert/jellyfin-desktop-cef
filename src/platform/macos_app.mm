@@ -48,6 +48,14 @@ static NSWindow* g_mainWindow = nil;
     [super sendEvent:event];
 }
 
+- (void)terminate:(id)sender {
+    // Don't call [super terminate:] which calls exit() and crashes during static destruction.
+    // Instead, post SDL quit event to let main loop handle cleanup properly.
+    SDL_Event event;
+    event.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&event);
+}
+
 @end
 
 void initMacApplication() {

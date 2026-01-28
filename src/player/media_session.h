@@ -54,6 +54,7 @@ public:
 
     // Called from event loop
     void update();
+    int getFd();  // File descriptor for poll, -1 if none
 
     // Control callbacks (set by main.cpp)
     std::function<void()> onPlay;

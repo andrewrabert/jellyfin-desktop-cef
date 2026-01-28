@@ -9,9 +9,6 @@
 #include <cstring>
 #include "logging.h"
 
-// Legacy globals (unused)
-Uint32 SDL_PLAYVIDEO_EVENT = 0;
-
 void App::OnBeforeCommandLineProcessing(const CefString& process_type,
                                         CefRefPtr<CefCommandLine> command_line) {
     // Disable all Google services

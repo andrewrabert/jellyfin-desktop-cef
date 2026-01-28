@@ -22,10 +22,11 @@ enum LogCategory {
     LOG_TEST       = SDL_LOG_CATEGORY_CUSTOM + 11,
     LOG_JS_MAIN    = SDL_LOG_CATEGORY_CUSTOM + 12,
     LOG_JS_OVERLAY = SDL_LOG_CATEGORY_CUSTOM + 13,
+    LOG_VIDEO      = SDL_LOG_CATEGORY_CUSTOM + 14,
 };
 
 // Last custom category (for iteration)
-constexpr int LOG_CATEGORY_LAST = LOG_JS_OVERLAY;
+constexpr int LOG_CATEGORY_LAST = LOG_VIDEO;
 
 // Convenience macros - printf-style
 #define LOG_ERROR(cat, ...)   SDL_LogError(cat, __VA_ARGS__)
@@ -52,6 +53,7 @@ inline const char* getCategoryTag(int category) {
         case LOG_TEST:       return "[Test] ";
         case LOG_JS_MAIN:    return "[JS:Main] ";
         case LOG_JS_OVERLAY: return "[JS:Overlay] ";
+        case LOG_VIDEO:      return "[Video] ";
         default:             return "";
     }
 }

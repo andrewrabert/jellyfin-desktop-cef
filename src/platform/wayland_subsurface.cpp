@@ -132,6 +132,11 @@ bool WaylandSubsurface::createSubsurface(wl_surface* parentSurface) {
     wl_subsurface_place_below(mpv_subsurface_, parentSurface);
     wl_subsurface_set_desync(mpv_subsurface_);
 
+    // Set empty input region so all input passes through to parent (CEF browser)
+    wl_region* empty_region = wl_compositor_create_region(wl_compositor_);
+    wl_surface_set_input_region(mpv_surface_, empty_region);
+    wl_region_destroy(empty_region);
+
     // Create viewport for HiDPI: render at physical pixels, display at logical size
     if (viewporter_) {
         viewport_ = wp_viewporter_get_viewport(viewporter_, mpv_surface_);
