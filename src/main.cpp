@@ -1282,6 +1282,7 @@ int main(int argc, char* argv[]) {
                     }
                     if (mpv->loadFile(cmd.url, startSec)) {
                         has_video = true;
+                        videoRenderer.setVisible(true);
                         LOG_INFO(LOG_MAIN, "Video loaded, has_video=true");
 #if !defined(_WIN32) && !defined(__APPLE__)
                         videoRenderThread.setActive(true);
