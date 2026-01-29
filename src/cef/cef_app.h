@@ -16,11 +16,11 @@ public:
     // Set device scale factor before CefInitialize
     void SetDeviceScaleFactor(float scale) { device_scale_factor_ = scale; }
 
-    // Set wake callback for external_message_pump mode (macOS)
+    // Set wake callback for external_message_pump mode (macOS/Linux)
     // Must be called before CefInitialize
     static void SetWakeCallback(std::function<void()> callback) { wake_callback_ = std::move(callback); }
 
-    // External message pump interface (macOS)
+    // External message pump interface (macOS/Linux)
     // Call when wake event received - pumps CEF work
     static void DoWork();
 
