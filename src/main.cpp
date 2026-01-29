@@ -27,6 +27,10 @@
 void initMacApplication();
 // Activate window for keyboard focus after SDL window creation
 void activateMacWindow(SDL_Window* window);
+// Wait for NSApplication events (integrates Cocoa + CFRunLoop)
+void waitForMacEvent();
+// Wake the NSApplication event loop from another thread
+void wakeMacEventLoop();
 #endif
 
 #ifdef __APPLE__
@@ -389,6 +393,10 @@ int main(int argc, char* argv[]) {
         SDL_Event event{};
         event.type = SDL_EVENT_WAKE;
         SDL_PushEvent(&event);
+#ifdef __APPLE__
+        // Wake NSApplication event loop (we use waitForMacEvent instead of SDL_WaitEvent)
+        wakeMacEventLoop();
+#endif
     };
 
 #ifdef __APPLE__
@@ -780,6 +788,7 @@ int main(int argc, char* argv[]) {
         [&](const std::string& cmd, const std::string& arg, int intArg, const std::string& metadata) {
             std::lock_guard<std::mutex> lock(cmd_mutex);
             pending_cmds.push_back({cmd, arg, intArg, 0.0, metadata});
+            wakeMainLoop();  // Wake from idle wait to process command
         },
 #if !defined(__APPLE__) && !defined(_WIN32)
         // Accelerated paint callback - queue dmabuf for import on main thread
@@ -1103,17 +1112,35 @@ int main(int argc, char* argv[]) {
 
         // Event-driven: wait for events when idle, poll when active
         bool has_pending = browsers.anyHasPendingContent();
+        bool has_pending_cmds = false;
+        {
+            std::lock_guard<std::mutex> lock(cmd_mutex);
+            has_pending_cmds = !pending_cmds.empty();
+        }
         SDL_Event event;
         bool have_event;
-        if (needs_render || has_video || has_pending || !paint_size_matched) {
+        if (needs_render || has_video || has_pending || has_pending_cmds || !paint_size_matched) {
             have_event = SDL_PollEvent(&event);
         } else {
 #ifdef __APPLE__
-            // macOS: Use CFRunLoop as the waiter instead of SDL_WaitEvent
-            // This processes both CFRunLoop sources (Mojo IPC for CEF frames)
-            // and NSApplication events (SDL input) in one unified wait
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1e10, true);
-            have_event = SDL_PollEvent(&event);
+            // Pump CEF before waiting - this processes any pending tasks and
+            // may schedule more work (which will wake us via OnScheduleMessagePumpWork)
+            App::DoWork();
+
+            // Re-check if CEF work generated content
+            has_pending = browsers.anyHasPendingContent();
+            {
+                std::lock_guard<std::mutex> lock(cmd_mutex);
+                has_pending_cmds = !pending_cmds.empty();
+            }
+            if (has_pending || has_pending_cmds) {
+                have_event = SDL_PollEvent(&event);
+            } else {
+                // Wait using NSApplication's event loop - properly integrates
+                // Cocoa events, CFRunLoop sources, and Mojo IPC
+                waitForMacEvent();
+                have_event = SDL_PollEvent(&event);
+            }
 #else
             // Idle: block until SDL event (input, window, or CEF wake callback)
             have_event = SDL_WaitEvent(&event);

@@ -85,6 +85,37 @@ void initMacApplication() {
     NSLog(@"Conforms to CefAppProtocol: %@", [NSApp conformsToProtocol:@protocol(CefAppProtocol)] ? @"YES" : @"NO");
 }
 
+// Wait for NSApplication events (integrates with both Cocoa and CFRunLoop)
+// Doesn't dequeue - just waits until an event is available, then returns
+// so SDL can process it
+void waitForMacEvent() {
+    @autoreleasepool {
+        // Wait indefinitely for any event, but don't dequeue it
+        // This pumps CFRunLoop (processing Mojo IPC) while waiting
+        [NSApp nextEventMatchingMask:NSEventMaskAny
+                           untilDate:[NSDate distantFuture]
+                              inMode:NSDefaultRunLoopMode
+                             dequeue:NO];
+        // Event stays in queue for SDL to process
+    }
+}
+
+// Wake the NSApplication event loop from another thread
+void wakeMacEventLoop() {
+    @autoreleasepool {
+        NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                            location:NSMakePoint(0, 0)
+                                       modifierFlags:0
+                                           timestamp:0
+                                        windowNumber:0
+                                             context:nil
+                                             subtype:0
+                                               data1:0
+                                               data2:0];
+        [NSApp postEvent:event atStart:YES];
+    }
+}
+
 // Call this after SDL window is created to ensure it can receive keyboard input
 void activateMacWindow(SDL_Window* window) {
     [NSApp activateIgnoringOtherApps:YES];
