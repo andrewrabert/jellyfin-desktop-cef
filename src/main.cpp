@@ -1003,11 +1003,6 @@ int main(int argc, char* argv[]) {
         auto now = frame_start;
         bool activity_this_frame = false;
 
-#ifdef __APPLE__
-        // macOS: Pump CEF message loop from main thread
-        CefDoMessageLoopWork();
-#endif
-
         // Process mpv events from event thread
         for (const auto& ev : mpvEvents.drain()) {
             switch (ev.type) {
@@ -1256,7 +1251,10 @@ int main(int argc, char* argv[]) {
             have_event = SDL_PollEvent(&event);
         }
 
-        // CEF runs on its own thread - no pump needed here
+#ifdef __APPLE__
+        // macOS: Pump CEF after events so mouse clicks are processed in same frame
+        CefDoMessageLoopWork();
+#endif
 
         // Determine if we need to render this frame
         needs_render = activity_this_frame || has_video || browsers.anyHasPendingContent() || overlay_state == OverlayState::FADING;
