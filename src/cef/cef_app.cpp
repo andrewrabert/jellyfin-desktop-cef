@@ -5,7 +5,6 @@
 #include "include/cef_browser.h"
 #include "include/cef_command_line.h"
 #include "include/cef_frame.h"
-#include "include/wrapper/cef_helpers.h"
 #include <cstring>
 #include "logging.h"
 
@@ -63,14 +62,50 @@ void App::OnContextInitialized() {
 }
 
 void App::OnScheduleMessagePumpWork(int64_t delay_ms) {
-    // Called by CEF when it needs CefDoMessageLoopWork() to be called
-    // delay_ms == 0: immediate work needed
-    // delay_ms > 0: work needed after delay
-    cef_work_delay_ms_.store(delay_ms);
-    cef_work_pending_.store(true);
-    // Wake the main loop from SDL_WaitEvent() so it can pump CEF
+    // Called by CEF (from any thread) when it needs CefDoMessageLoopWork()
+    if (delay_ms <= 0) {
+        // Immediate work - wake main loop now
+        if (wake_callback_) {
+            wake_callback_();
+        }
+    } else {
+        // Delayed work - use SDL timer
+        // Cancel any existing timer first
+        if (timer_id_ != 0) {
+            SDL_RemoveTimer(timer_id_);
+        }
+        timer_id_ = SDL_AddTimer(static_cast<Uint32>(delay_ms), TimerCallback, nullptr);
+    }
+}
+
+Uint32 App::TimerCallback(void* /*userdata*/, SDL_TimerID /*id*/, Uint32 /*interval*/) {
+    timer_id_ = 0;  // Timer fired, clear ID
     if (wake_callback_) {
         wake_callback_();
+    }
+    return 0;  // Don't repeat
+}
+
+void App::DoWork() {
+    // Re-entrancy protection - CefDoMessageLoopWork can trigger callbacks
+    // that call back into this (e.g., paint callbacks)
+    if (is_active_.load()) {
+        reentrancy_detected_.store(true);
+        return;
+    }
+
+    reentrancy_detected_.store(false);
+    is_active_.store(true);
+
+    CefDoMessageLoopWork();
+
+    is_active_.store(false);
+
+    // If re-entrancy was detected, schedule immediate work
+    if (reentrancy_detected_.load()) {
+        if (wake_callback_) {
+            wake_callback_();
+        }
     }
 }
 

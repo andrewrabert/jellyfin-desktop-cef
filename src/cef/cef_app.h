@@ -20,9 +20,9 @@ public:
     // Must be called before CefInitialize
     static void SetWakeCallback(std::function<void()> callback) { wake_callback_ = std::move(callback); }
 
-    // Check if CEF needs work done (for external_message_pump mode on macOS)
-    static bool NeedsWork() { return cef_work_pending_.exchange(false); }
-    static int64_t GetWorkDelay() { return cef_work_delay_ms_; }
+    // External message pump interface (macOS)
+    // Call when wake event received - pumps CEF work
+    static void DoWork();
 
     // CefApp
     CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
@@ -45,9 +45,13 @@ public:
                          CefRefPtr<CefV8Context> context) override;
 
 private:
-    static inline std::atomic<bool> cef_work_pending_{false};
-    static inline std::atomic<int64_t> cef_work_delay_ms_{0};
+    // External message pump state (macOS)
     static inline std::function<void()> wake_callback_;
+    static inline std::atomic<bool> is_active_{false};  // Re-entrancy guard
+    static inline std::atomic<bool> reentrancy_detected_{false};
+    static inline SDL_TimerID timer_id_{0};  // For delayed work
+    static Uint32 TimerCallback(void* userdata, SDL_TimerID id, Uint32 interval);
+
     float device_scale_factor_ = 1.0f;
 
     IMPLEMENT_REFCOUNTING(App);

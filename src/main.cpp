@@ -21,6 +21,7 @@
 #ifdef __APPLE__
 #include "include/wrapper/cef_library_loader.h"
 #include "include/cef_application_mac.h"
+#include <CoreFoundation/CoreFoundation.h>
 
 // Initialize CEF-compatible NSApplication before SDL
 void initMacApplication();
@@ -977,7 +978,7 @@ int main(int argc, char* argv[]) {
         // Render on EXPOSED events during live resize
         if (event->type == SDL_EVENT_WINDOW_EXPOSED && event->window.data1 == 1) {
             // macOS uses external_message_pump - must pump CEF here during resize
-            CefDoMessageLoopWork();
+            App::DoWork();
 
             // Render video if playing
             if (*ctx->has_video && ctx->videoRenderer->hasFrame()) {
@@ -992,6 +993,11 @@ int main(int argc, char* argv[]) {
     };
 
     SDL_AddEventWatch(liveResizeCallback, &live_resize_ctx);
+#endif
+
+#ifdef __APPLE__
+    // Initial CEF pump to kick off work scheduling
+    App::DoWork();
 #endif
 
     // Main loop - simplified (no Vulkan command buffers for main surface)
@@ -1102,8 +1108,16 @@ int main(int argc, char* argv[]) {
         if (needs_render || has_video || has_pending || !paint_size_matched) {
             have_event = SDL_PollEvent(&event);
         } else {
-            // Idle: block until SDL event (input, window, or custom wake from CEF paint)
+#ifdef __APPLE__
+            // macOS: Use CFRunLoop as the waiter instead of SDL_WaitEvent
+            // This processes both CFRunLoop sources (Mojo IPC for CEF frames)
+            // and NSApplication events (SDL input) in one unified wait
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1e10, true);
+            have_event = SDL_PollEvent(&event);
+#else
+            // Idle: block until SDL event (input, window, or CEF wake callback)
             have_event = SDL_WaitEvent(&event);
+#endif
         }
 
         while (have_event) {
@@ -1252,8 +1266,8 @@ int main(int argc, char* argv[]) {
         }
 
 #ifdef __APPLE__
-        // macOS: Pump CEF after events so mouse clicks are processed in same frame
-        CefDoMessageLoopWork();
+        // macOS: Always pump CEF - scheduling controls actual work frequency
+        App::DoWork();
 #endif
 
         // Determine if we need to render this frame
