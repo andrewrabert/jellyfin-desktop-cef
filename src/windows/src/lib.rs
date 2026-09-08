@@ -22,6 +22,7 @@ use windows::core::{PCWSTR, w};
 
 use jfn_platform_abi::{DisplayBackend, PaintFrame, Platform, WindowDecorations};
 
+mod file_dialog;
 mod input;
 mod menu;
 mod mpv_host;
@@ -275,6 +276,10 @@ impl Platform for WindowsPlatform {
 
     fn open_external_url(&self, url: &str) {
         win_open_external_url(url);
+    }
+
+    fn open_file_dialog(&self, req: jfn_platform_abi::FileDialogRequest) -> bool {
+        file_dialog::open(req)
     }
 
     fn open_path(&self, path: &std::path::Path) {

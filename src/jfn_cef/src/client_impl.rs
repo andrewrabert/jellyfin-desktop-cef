@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::client::Inner;
 
 mod context_menu;
+mod dialog;
 mod display;
 mod keyboard;
 mod lifespan;
@@ -13,6 +14,7 @@ mod os_ffi;
 mod process_message;
 mod render;
 use context_menu::JfnContextMenuHandlerBuilder;
+use dialog::JfnDialogHandlerBuilder;
 use display::JfnDisplayHandlerBuilder;
 use keyboard::JfnKeyboardHandlerBuilder;
 use lifespan::JfnLifeSpanHandlerBuilder;
@@ -40,6 +42,9 @@ wrap_client! {
         }
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
             Some(JfnContextMenuHandlerBuilder::new(self.inner.clone()))
+        }
+        fn dialog_handler(&self) -> Option<DialogHandler> {
+            Some(JfnDialogHandlerBuilder::new(self.inner.clone()))
         }
         fn display_handler(&self) -> Option<DisplayHandler> {
             Some(JfnDisplayHandlerBuilder::new(self.inner.clone()))
