@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub mod cef_host;
+pub mod file_dialog;
 pub mod geometry;
 pub mod instance;
 pub mod media_sink;
@@ -32,6 +33,7 @@ mod signal;
 pub mod window_source;
 
 pub use cef_host::CefHost;
+pub use file_dialog::{FileDialogFilter, FileDialogKind, FileDialogRequest};
 pub use geometry::{
     BootGeometry, LogicalPoint, LogicalSize, PhysicalPoint, PhysicalSize, Scale, SurfaceSize,
     WindowExtent, WindowGeometry, WindowPos,
@@ -639,6 +641,23 @@ pub trait Platform: Send + Sync {
 
     /// Open a filesystem path in the OS file manager.
     fn open_path(&self, _path: &Path) {}
+
+    /// Open a native file chooser for `req`.
+    ///
+    /// `true` means the backend took the request and will invoke
+    /// `req.on_done` exactly once (with `None` for cancel or failure).
+    /// `false` means "no native chooser here": the request is dropped
+    /// without `on_done` ever running, and the caller must resolve its own
+    /// side. The default returns `false`.
+    ///
+    /// Only the Windows backend implements this today. macOS and Linux keep
+    /// the default on purpose — CEF's own chooser cannot run for a windowless
+    /// browser, so the caller cancels the dialog instead of crashing; native
+    /// choosers for those backends are follow-up work.
+    fn open_file_dialog(&self, req: FileDialogRequest) -> bool {
+        let _ = req;
+        false
+    }
 
     /// Run `f` to completion without deadlocking work that needs the
     /// main thread (e.g. mpv's VO uninit doing `DispatchQueue.main.sync`).
