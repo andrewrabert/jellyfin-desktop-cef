@@ -2,14 +2,16 @@
 //! returns the exit code.
 
 use std::ffi::{CStr, CString, c_char, c_int};
+use std::path::{Path, PathBuf};
 use std::ptr;
-use std::time::Duration;
+use std::thread::JoinHandle;
 
 use clap::Parser;
 use jfn_cef::{APP_VERSION_FULL, cef_version};
 use jfn_instance_ipc::jfn::{Request, Response};
 use jfn_instance_ipc::{Listener, Start, Stream};
-use jfn_platform_abi::{IdleInhibitLevel, Instance, LogicalSize, Platform, WindowGeometry};
+use jfn_logging::{Category, Level};
+use jfn_platform_abi::{IdleInhibitLevel, Instance, Platform, WindowGeometry};
 
 use crate::cli;
 
@@ -19,39 +21,42 @@ fn plat() -> &'static dyn Platform {
     jfn_platform_abi::get()
 }
 
-// Read once by `jfn_app_main` after CEF boot to seed the theme rotator.
-static VIDEO_BG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The started web overlay, for the C handler thunks the playback coordinator
+/// still calls through.
+static WEB_OVERLAY: parking_lot::Mutex<Option<jfn_cef::WebOverlay>> = parking_lot::Mutex::new(None);
 
-fn video_bg_set(rgb: u32) {
-    VIDEO_BG.store(rgb, std::sync::atomic::Ordering::Release);
-}
-
-fn video_bg_get() -> u32 {
-    VIDEO_BG.load(std::sync::atomic::Ordering::Acquire)
+#[derive(Debug, thiserror::Error)]
+enum RuntimeShutdownError {
+    #[error(transparent)]
+    Manager(#[from] crate::manager::ManagerError),
+    #[error("the shutdown manager thread could not be joined")]
+    ManagerJoinFailed,
 }
 
 /// mpv background applied over the user's mpv.conf color for the app's
 /// lifetime before the theme rotator takes over.
 const STARTUP_BG_HEX: &str = "#101010";
 
-/// Set once the startup background override has replaced the user's color.
-static STARTUP_BG_APPLIED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// Boot state that crosses the phases of [`run_app`]: the CEF bring-up
+/// decision and the mpv background capture.
+#[derive(Default)]
+struct Boot {
+    /// Set once `CefInitialize` returned ok.
+    cef: Option<CefInit>,
+    /// The user's mpv.conf background once captured; seeds the theme rotator.
+    user_video_bg: u32,
+    /// Set once the startup background override has replaced the user's color.
+    startup_bg_applied: bool,
+}
 
-/// Shared-texture decision `CefInitialize` was given.
-static SHARED_TEXTURES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Whether CEF was initialized with shared-texture compositing.
-fn shared_textures() -> bool {
-    SHARED_TEXTURES.load(std::sync::atomic::Ordering::Acquire)
+/// What `CefInitialize` was given.
+#[derive(Clone, Copy)]
+struct CefInit {
+    /// Whether CEF composites through shared textures.
+    shared_textures: bool,
 }
 
 pub(crate) const DEFAULT_LOG_FILTER: &str = "info";
-
-struct BootArgs {
-    disable_gpu_compositing: bool,
-    remote_debugging_port: c_int,
-}
 
 fn cs(s: &str) -> CString {
     CString::new(s).unwrap_or_default()
@@ -80,12 +85,10 @@ fn print_version() {
     jfn_mpv::probe::jfn_mpv_print_version_info();
 }
 
-fn init_logging(log_file: Option<String>, log_level: &str) {
-    let log_path = log_file.unwrap_or_else(|| {
-        jfn_paths::default_log_file()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    });
+fn init_logging(log_file: Option<&Path>, log_level: &str) {
+    let log_path = log_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
     let filter = if log_level.is_empty() {
         DEFAULT_LOG_FILTER.to_string()
@@ -147,12 +150,13 @@ fn setup_mpv_environment() {
 }
 
 struct StartupOptions {
-    hwdec: String,
+    hwdec: jfn_config::Hwdec,
     audio_passthrough: String,
     audio_exclusive: bool,
     audio_channels: String,
     log_level: String,
-    log_file: Option<String>,
+    /// The file logs are written to; `None` disables file logging.
+    log_file: Option<PathBuf>,
     disable_gpu_compositing: bool,
     remote_debugging_port: c_int,
 }
@@ -164,25 +168,24 @@ fn resolve_startup_options(cli: &cli::Cli) -> StartupOptions {
     let saved_log_level = jfn_config::log_level();
     let saved_audio_exclusive = jfn_config::audio_exclusive();
 
-    let mpv_hwdec_default = jfn_mpv::HWDEC_DEFAULT.to_string();
-
-    let mut hwdec = if saved_hwdec.is_empty() {
-        mpv_hwdec_default.clone()
-    } else {
-        saved_hwdec
+    // An unknown CLI value falls back to the mpv default.
+    let hwdec = match cli.hwdec.as_deref() {
+        Some(value) => value.parse::<jfn_config::Hwdec>().unwrap_or_default(),
+        None => saved_hwdec,
     };
     let mut audio_passthrough = saved_pass;
     let mut audio_exclusive = saved_audio_exclusive;
     let mut audio_channels = saved_chans;
     let mut log_level = saved_log_level;
 
-    let log_file = cli.log_file.clone();
+    let log_file = match cli.log_file.as_deref() {
+        Some("") => None,
+        Some(path) => Some(PathBuf::from(path)),
+        None => jfn_paths::default_log_file(),
+    };
     let mut disable_gpu_compositing = false;
     let mut remote_debugging_port: c_int = 0;
 
-    if let Some(v) = cli.hwdec.clone() {
-        hwdec = v;
-    }
     if let Some(v) = cli.audio_passthrough.clone() {
         audio_passthrough = v;
     }
@@ -200,10 +203,6 @@ fn resolve_startup_options(cli: &cli::Cli) -> StartupOptions {
     }
     if let Some(p) = cli.remote_debug_port {
         remote_debugging_port = p;
-    }
-
-    if !jfn_mpv::is_valid_hwdec(&hwdec) {
-        hwdec = mpv_hwdec_default;
     }
 
     if !audio_passthrough.is_empty() {
@@ -228,7 +227,7 @@ struct MpvInitOptions<'a> {
     boot_force_position: bool,
     boot_window_max: bool,
     embed_wid: Option<i64>,
-    hwdec: &'a str,
+    hwdec: jfn_config::Hwdec,
     audio_passthrough: &'a str,
     audio_exclusive: bool,
     audio_channels: &'a str,
@@ -237,7 +236,7 @@ struct MpvInitOptions<'a> {
 
 fn init_mpv_handle(opts: MpvInitOptions<'_>) -> *mut jfn_mpv::sys::mpv_handle {
     let geometry_c = opts.boot_geometry.map(cs);
-    let hwdec_c = cs(opts.hwdec);
+    let hwdec_c = cs(opts.hwdec.as_str());
     let user_agent_c = cs(&format!("JelliumDesktop/{}", APP_VERSION_FULL));
     let passthrough_c = cs(opts.audio_passthrough);
     let channels_c = cs(opts.audio_channels);
@@ -269,19 +268,18 @@ fn init_mpv_handle(opts: MpvInitOptions<'_>) -> *mut jfn_mpv::sys::mpv_handle {
 
 /// Blocks until the window source has a usable extent. Returns false on
 /// a fatal mpv event (shutdown before the VO came up).
-fn wait_for_vo_window() -> bool {
+fn wait_for_vo_window(boot: &mut Boot) -> bool {
     tracing::info!(target: "Main", "Waiting for mpv window...");
     let started = std::time::Instant::now();
 
     let mut fatal = false;
 
     // The platform owns the wait strategy; this pump owns all mpv event
-    // handling. It drains everything mpv has queued without blocking, then,
-    // when the platform's strategy grants a block budget, parks in mpv for at
-    // most that long.
-    plat().mpv_host().run_vo_wait(&mut |budget: Duration| {
+    // handling. After draining and checking readiness it can park indefinitely:
+    // mpv events and the window-change subscription both wake this wait.
+    plat().mpv_host().run_vo_wait(&mut |wait| {
         loop {
-            match consume_boot_event(jfn_mpv::api::wait_event_owned(0.0)) {
+            match consume_boot_event(boot, jfn_mpv::api::wait_event_owned(0.0)) {
                 BootEvent::Idle => break,
                 BootEvent::Fatal => {
                     fatal = true;
@@ -290,12 +288,12 @@ fn wait_for_vo_window() -> bool {
                 BootEvent::Consumed => {}
             }
         }
-        if boot_ready() {
+        if boot_ready(boot) {
             return false;
         }
-        if !budget.is_zero()
+        if wait == jfn_platform_abi::VoWait::Event
             && matches!(
-                consume_boot_event(jfn_mpv::api::wait_event_owned(budget.as_secs_f64())),
+                consume_boot_event(boot, jfn_mpv::api::wait_event_owned(-1.0)),
                 BootEvent::Fatal
             )
         {
@@ -345,16 +343,15 @@ fn publish_device_profile(mpv_raw: *mut jfn_mpv::sys::mpv_handle) {
 }
 
 /// `CefInitialize` with the flags this boot resolved, recording the
-/// shared-texture decision for [`shared_textures`]. A call after a successful
-/// one returns true without re-entering CEF.
-fn ensure_cef_initialized(ba: &BootArgs) -> bool {
-    if CEF_INITED.load(std::sync::atomic::Ordering::Acquire) {
+/// shared-texture decision in `boot.cef`. A call after a successful one
+/// returns true without re-entering CEF.
+fn ensure_cef_initialized(boot: &mut Boot, opts: &StartupOptions) -> bool {
+    if boot.cef.is_some() {
         return true;
     }
-    let use_shared_textures = plat().shared_texture_supported() && !ba.disable_gpu_compositing;
-    SHARED_TEXTURES.store(use_shared_textures, std::sync::atomic::Ordering::Release);
+    let use_shared_textures = plat().shared_texture_supported() && !opts.disable_gpu_compositing;
     jfn_cef::ffi::jfn_cef_set_log_severity(cef_severity_for_cef_filter());
-    jfn_cef::ffi::jfn_cef_set_remote_debugging_port(ba.remote_debugging_port);
+    jfn_cef::ffi::jfn_cef_set_remote_debugging_port(opts.remote_debugging_port);
     jfn_cef::ffi::jfn_cef_set_disable_gpu_compositing(!use_shared_textures);
     jfn_cef::ffi::jfn_cef_set_platform_switches(plat().display());
     tracing::info!(target: "Main", "[FLOW] calling CefInitialize...");
@@ -363,7 +360,9 @@ fn ensure_cef_initialized(ba: &BootArgs) -> bool {
         tracing::error!(target: "Main", "CefInitialize failed");
         return false;
     }
-    CEF_INITED.store(true, std::sync::atomic::Ordering::Release);
+    boot.cef = Some(CefInit {
+        shared_textures: use_shared_textures,
+    });
     tracing::info!(target: "Main",
         "[FLOW] CefInitialize returned ok in {} ms", started.elapsed().as_millis());
     true
@@ -371,7 +370,6 @@ fn ensure_cef_initialized(ba: &BootArgs) -> bool {
 
 fn start_playback_coordination(instance: &Instance) -> bool {
     jfn_playback::ffi::jfn_playback_init();
-    COORD_INITED.store(true, std::sync::atomic::Ordering::Release);
 
     jfn_playback::idle_inhibit_sink::jfn_playback_set_idle_inhibit_handler(Some(h_idle_inhibit));
     jfn_playback::theme_color_sink::jfn_playback_set_theme_video_mode_handler(Some(
@@ -384,10 +382,6 @@ fn start_playback_coordination(instance: &Instance) -> bool {
 
     plat().media_session().start(instance);
 
-    jfn_playback::ingest_driver::jfn_playback_set_scale_provider(|| {
-        let s = plat().get_scale();
-        if s > 0.0 { s } else { 1.0 }
-    });
     jfn_playback::ingest_driver::jfn_playback_set_fullscreen_handler(|fs| {
         plat().set_fullscreen(fs)
     });
@@ -405,14 +399,20 @@ fn start_playback_coordination(instance: &Instance) -> bool {
     true
 }
 
-fn shutdown_runtime(manager_thread: std::thread::JoinHandle<()>) {
-    // Persist before the joins below: they can block on a VO-teardown
+fn shutdown_runtime(
+    manager_thread: JoinHandle<Result<(), crate::manager::ManagerError>>,
+    overlay: jfn_cef::WebOverlay,
+) -> Result<(), RuntimeShutdownError> {
+    // Persist before the join below: it can block on a VO-teardown
     // roundtrip, and a hang there must not cost the window geometry.
     crate::window_geometry::controller().persist();
     jfn_config::settings_save();
 
     // Join before any teardown so no posted task outlives the layer free below.
-    let _ = manager_thread.join();
+    let manager = manager_thread
+        .join()
+        .map_err(|_| RuntimeShutdownError::ManagerJoinFailed)
+        .and_then(|r| r.map_err(RuntimeShutdownError::from));
 
     // Sever host↔mpv links that could deadlock the teardown below once
     // CEF threads start dying.
@@ -425,54 +425,46 @@ fn shutdown_runtime(manager_thread: std::thread::JoinHandle<()>) {
 
     jfn_config::settings_shutdown_save_worker();
 
-    jfn_cef::browsers::jfn_browsers_shutdown();
+    jfn_shell::shell_shutdown();
+    WEB_OVERLAY.lock().take();
+    drop(overlay);
     jfn_cef::ffi::jfn_cef_shutdown();
-    CEF_INITED.store(false, std::sync::atomic::Ordering::Release);
 
     plat().set_idle_inhibit(IdleInhibitLevel::None);
 
     plat().cleanup();
-    PLATFORM_INITED.store(false, std::sync::atomic::Ordering::Release);
 
     jfn_playback::ffi::jfn_playback_shutdown();
-    COORD_INITED.store(false, std::sync::atomic::Ordering::Release);
+
+    manager
 }
 
-/// Boot-time mpv size reconcile (saved scale vs live display scale);
-/// seeds the display-hz cache and returns it for browser init.
-fn boot_mpv_reconcile(mpv_raw: *mut jfn_mpv::sys::mpv_handle) -> f64 {
-    let mut display_hidpi_scale: f64 = 0.0;
-    unsafe {
-        let name = cs("display-hidpi-scale");
-        jfn_mpv::sys::mpv_get_property(
-            mpv_raw,
-            name.as_ptr(),
-            jfn_mpv::sys::mpv_format::MPV_FORMAT_DOUBLE,
-            &mut display_hidpi_scale as *mut f64 as *mut std::ffi::c_void,
-        );
-    }
+/// Boot-time mpv size reconcile (saved scale vs the scale the platform
+/// reports); seeds the display-hz cache and returns it for browser init.
+fn boot_mpv_reconcile() -> Option<jfn_gpu_paint::RefreshRate> {
     jfn_playback::ingest_driver::jfn_playback_seed_display_hz_sync();
     let hz = jfn_playback::ingest_driver::jfn_playback_display_hz();
+    let rate = jfn_gpu_paint::RefreshRate::from_hz(hz);
+    if let Some(rate) = rate {
+        jfn_gpu_paint::report_refresh(jfn_gpu_paint::RefreshSource::MpvDisplayFps, rate);
+    }
     let saved = jfn_config::window_geometry();
     let snap = crate::window_geometry::controller().source().snapshot();
     tracing::info!(target: "Main",
-        "[FLOW] display-hidpi-scale={display_hidpi_scale} fullscreen={} display-hz={hz}",
-        snap.fullscreen
+        "[FLOW] scale={} fullscreen={} display-hz={hz}",
+        plat().scale(), snap.fullscreen
     );
 
     // Saved intent, not an observation: the OS may still be applying the
     // maximize, and a set_geometry landing mid-flight leaves mpv's stored
     // window size disagreeing with the visible window.
     let locked = saved.maximized || snap.fullscreen || snap.maximized;
-    if let Some(physical) = plat().reconcile_mpv_size(
-        display_hidpi_scale,
-        saved.scale,
-        LogicalSize {
-            w: saved.logical_width,
-            h: saved.logical_height,
-        },
-        locked,
-    ) {
+    let reconciled = crate::window_geometry::saved_sizes(&saved).and_then(|(logical, physical)| {
+        plat()
+            .window_owner()
+            .reconcile_mpv_size(plat().scale(), logical, physical, locked)
+    });
+    if let Some(physical) = reconciled {
         let clamped = plat().clamp_window_geometry(WindowGeometry {
             w: physical.w,
             h: physical.h,
@@ -481,19 +473,25 @@ fn boot_mpv_reconcile(mpv_raw: *mut jfn_mpv::sys::mpv_handle) -> f64 {
         let (new_pw, new_ph) = (clamped.w, clamped.h);
         let geom_str = format!("{new_pw}x{new_ph}");
         tracing::info!(target: "Main",
-            "[FLOW] scale {:.3} -> {:.3}, resize to {}", saved.scale, display_hidpi_scale, geom_str);
+            "[FLOW] scale {}, saved {}x{} logical at {}x{} physical, resize to {}",
+            plat().scale(), saved.logical_width, saved.logical_height,
+            saved.width, saved.height, geom_str);
         let g_c = cs(&geom_str);
         unsafe { jfn_mpv::api::jfn_mpv_set_geometry(g_c.as_ptr()) };
     }
 
-    hz
+    rate
 }
 
-fn init_main_browser(
-    hz: f64,
-    use_shared_textures: bool,
-) -> (std::thread::JoinHandle<()>, *mut jfn_cef::JfnCefLayer) {
-    // Must run before main browser create: the pre-loaded page fires its
+fn start_web_overlay(
+    rate: Option<jfn_gpu_paint::RefreshRate>,
+    cef: CefInit,
+    user_video_bg: u32,
+) -> (
+    JoinHandle<Result<(), crate::manager::ManagerError>>,
+    jfn_cef::WebOverlay,
+) {
+    // Must run before the browser is created: the pre-loaded page fires its
     // initial theme-color IPC at DOMContentLoaded.
     let titlebar_themed = jfn_config::titlebar_theme_color();
     unsafe {
@@ -506,32 +504,25 @@ fn init_main_browser(
             Some(h_theme_set_mpv_bg),
         );
     }
-    jfn_color::theme::jfn_theme_color_set_video_bg(video_bg_get());
+    jfn_color::theme::jfn_theme_color_set_video_bg(user_video_bg);
 
-    jfn_cef::browsers::jfn_browsers_init(hz, use_shared_textures);
-    let manager_thread = crate::manager::jfn_manager_start();
+    // The overlay creates its browser itself, at the first size the window
+    // snapshot and the shell overlay's reserved strip yield.
+    let overlay = jfn_cef::WebOverlay::start(jfn_cef::WebOverlayConfig {
+        frame_rate: rate,
+        shared_textures: cef.shared_textures,
+    });
+    let manager_thread = crate::manager::jfn_manager_start(overlay.clone());
     jfn_playback::jfn_shutdown_set_handler(Some(h_shutdown_wake_manager));
 
-    let web_kind = cs("web");
-    let main_layer = unsafe { jfn_cef::browsers::jfn_browsers_create(web_kind.as_ptr()) };
-    jfn_cef::business_web::jfn_web_init(main_layer);
-
-    let server_url = jfn_config::server_url();
-    tracing::info!(target: "Main", "[FLOW] CreateBrowser(main) url={server_url}");
-    unsafe {
-        jfn_cef::client::jfn_cef_layer_create(
-            main_layer,
-            server_url.as_ptr() as *const _,
-            server_url.len(),
-        );
+    if let Some(host) = plat().cef_host() {
+        host.start_frame_driver(std::sync::Arc::new({
+            let overlay = overlay.clone();
+            move || overlay.send_external_begin_frame()
+        }));
     }
-    tracing::info!(target: "Main", "[FLOW] CreateBrowser(main) call returned");
 
-    tracing::info!(target: "Main", "[FLOW] jfn_overlay_init(main_layer)");
-    jfn_cef::business_overlay::jfn_overlay_init(main_layer);
-    tracing::info!(target: "Main", "[FLOW] jfn_overlay_init returned");
-
-    (manager_thread, main_layer)
+    (manager_thread, overlay)
 }
 
 pub fn jfn_app_main() -> c_int {
@@ -562,7 +553,7 @@ pub fn jfn_app_main() -> c_int {
 
     let opts = resolve_startup_options(&cli);
 
-    init_logging(opts.log_file.clone(), &opts.log_level);
+    init_logging(opts.log_file.as_deref(), &opts.log_level);
 
     crate::platform_install::install_from_cli(&cli);
 
@@ -615,10 +606,15 @@ async fn notify_running(instance: &Instance) -> c_int {
 }
 
 fn run_app(instance: &Instance, opts: StartupOptions) -> c_int {
+    let fonts = jfn_shell::shell_warm_fonts();
+
     // Boot geometry resolves before the host prepare so its display probes
     // hit the real server, not the mpv proxy the prepare may install.
-    let boot = crate::window_geometry::controller().boot();
-    plat().apply_boot_geometry(&boot);
+    let Some(boot) = crate::window_geometry::controller().boot() else {
+        tracing::error!(target: "Main", "boot geometry unrepresentable at the reported scale");
+        return 1;
+    };
+    let mpv_boot = plat().window_owner().apply_boot_geometry(&boot);
 
     setup_mpv_environment();
 
@@ -633,16 +629,14 @@ fn run_app(instance: &Instance, opts: StartupOptions) -> c_int {
     // when mpv owns the window; toplevel-owning backends size and
     // position/maximize the host window themselves.
     let backend_byte: u8 = plat().display() as u8;
-    let boot_mpv_geometry = plat().boot_mpv_geometry(&boot);
-    let mpv_owns_window = boot_mpv_geometry.is_some();
     let mpv_started = std::time::Instant::now();
     let raw = init_mpv_handle(MpvInitOptions {
         backend_byte,
-        boot_geometry: boot_mpv_geometry.as_deref(),
-        boot_force_position: mpv_owns_window && boot.force_position(),
-        boot_window_max: mpv_owns_window && boot.maximized(),
+        boot_geometry: mpv_boot.as_ref().map(|w| w.geometry.as_str()),
+        boot_force_position: mpv_boot.as_ref().is_some_and(|w| w.force_position),
+        boot_window_max: mpv_boot.as_ref().is_some_and(|w| w.maximized),
         embed_wid: plat().mpv_host().embed_wid(),
-        hwdec: &opts.hwdec,
+        hwdec: opts.hwdec,
         audio_passthrough: &opts.audio_passthrough,
         audio_exclusive: opts.audio_exclusive,
         audio_channels: &opts.audio_channels,
@@ -672,25 +666,40 @@ fn run_app(instance: &Instance, opts: StartupOptions) -> c_int {
 
     wake_mpv_on_window_change();
 
-    let boot_args = BootArgs {
-        disable_gpu_compositing: opts.disable_gpu_compositing,
-        remote_debugging_port: opts.remote_debugging_port,
-    };
+    let mut boot = Boot::default();
+
+    // Platform init precedes both the shell overlay and `CefInitialize`: the
+    // overlay's surface needs the backend's compositor devices, and the
+    // connect screen must be on screen while CEF is still starting.
+    if !plat().init(raw as *mut std::ffi::c_void) {
+        tracing::error!(target: "Main", "Platform init failed");
+        return 1;
+    }
+    tracing::info!(target: "Main", "Platform init ok");
+
+    jfn_platform_abi::set_about_handler(jfn_shell::shell_open_about);
+    jfn_platform_abi::set_client_settings_handler(jfn_shell::shell_open_client_settings);
+    if jfn_shell::shell_start().is_none() {
+        tracing::warn!(target: "Main", "shell overlay unavailable; no connect screen");
+    }
+    // fontdb's directory walk must not run while Chromium is manipulating
+    // process file descriptors.
+    let _ = fonts.join();
 
     // CEF's process bring-up needs nothing mpv owns; where the platform
     // allows it, it runs while the core thread builds the VO and its GPU
     // context instead of after.
-    if plat().cef_init_precedes_mpv_window() && !ensure_cef_initialized(&boot_args) {
+    if plat().cef_init_precedes_mpv_window() && !ensure_cef_initialized(&mut boot, &opts) {
         return 1;
     }
 
-    if !wait_for_vo_window() {
+    if !wait_for_vo_window(&mut boot) {
         return 0;
     }
 
     log_mpv_versions();
 
-    let rc = unsafe { run_with_cef(&boot_args, instance) };
+    let rc = unsafe { run_with_cef(&mut boot, &opts, instance) };
     if rc != 0 {
         return rc;
     }
@@ -708,24 +717,17 @@ fn run_app(instance: &Instance, opts: StartupOptions) -> c_int {
 // mpv boot helpers + VO wait loop
 // =====================================================================
 
-const LOG_MPV: u8 = 1;
-const LEVEL_TRACE: u8 = 0;
-const LEVEL_DEBUG: u8 = 1;
-const LEVEL_INFO: u8 = 2;
-const LEVEL_WARN: u8 = 3;
-const LEVEL_ERROR: u8 = 4;
-
 fn mpv_log_level_from_filter() -> &'static str {
-    let e = jfn_logging::log_enabled;
-    if e(LOG_MPV, LEVEL_TRACE) {
+    let e = |level| jfn_logging::log_enabled(Category::Mpv, level);
+    if e(Level::Trace) {
         "debug"
-    } else if e(LOG_MPV, LEVEL_DEBUG) {
+    } else if e(Level::Debug) {
         "v"
-    } else if e(LOG_MPV, LEVEL_INFO) {
+    } else if e(Level::Info) {
         "info"
-    } else if e(LOG_MPV, LEVEL_WARN) {
+    } else if e(Level::Warn) {
         "warn"
-    } else if e(LOG_MPV, LEVEL_ERROR) {
+    } else if e(Level::Error) {
         "error"
     } else {
         "no"
@@ -744,7 +746,7 @@ enum BootEvent {
 
 /// Log messages reach tracing, the background-color reply applies the startup
 /// override, every other event reaches the ingest layer.
-fn consume_boot_event(event: jfn_mpv::api::WaitEvent) -> BootEvent {
+fn consume_boot_event(boot: &mut Boot, event: jfn_mpv::api::WaitEvent) -> BootEvent {
     match event {
         jfn_mpv::api::WaitEvent::None => BootEvent::Idle,
         jfn_mpv::api::WaitEvent::LogMessage(m) => {
@@ -759,33 +761,27 @@ fn consume_boot_event(event: jfn_mpv::api::WaitEvent) -> BootEvent {
             ref value,
             ..
         }) => {
-            apply_startup_background(value);
+            apply_startup_background(boot, value);
             BootEvent::Consumed
         }
         jfn_mpv::api::WaitEvent::Event(event) => {
-            let scale_raw = plat().get_scale();
-            let scale = if scale_raw > 0.0 { scale_raw } else { 1.0 };
-            jfn_playback::ingest_driver::jfn_playback_ingest_mpv_event_owned(
-                &event,
-                scale,
-                plat().mpv_host().logical_content_size(),
-            );
+            jfn_playback::ingest_driver::jfn_playback_ingest_mpv_event_owned(&event);
             BootEvent::Consumed
         }
     }
 }
 
 /// Stores the user's color for the theme rotator, then writes
-/// [`STARTUP_BG_HEX`] in its place. Latches [`STARTUP_BG_APPLIED`] even when
+/// [`STARTUP_BG_HEX`] in its place. Latches `startup_bg_applied` even when
 /// the reply carried no value.
-fn apply_startup_background(value: &jfn_mpv::PropertyValue) {
+fn apply_startup_background(boot: &mut Boot, value: &jfn_mpv::PropertyValue) {
     if let Some(user_bg) = jfn_mpv::api::background_color_from_reply(value) {
-        video_bg_set(user_bg);
+        boot.user_video_bg = user_bg;
         tracing::info!(target: "Main", "video bg captured: #{user_bg:06x}");
     }
     let startup_bg = cs(STARTUP_BG_HEX);
     unsafe { jfn_mpv::api::jfn_mpv_set_background_color_hex(startup_bg.as_ptr()) };
-    STARTUP_BG_APPLIED.store(true, std::sync::atomic::Ordering::Release);
+    boot.startup_bg_applied = true;
 }
 
 /// Ready once the window authority reports an extent, the host's own startup
@@ -793,21 +789,20 @@ fn apply_startup_background(value: &jfn_mpv::PropertyValue) {
 /// mode is never a boot precondition: where mpv owns the toplevel the
 /// `window-maximized` report is an echo of the boot option, and where a host
 /// owns the toplevel the WM/compositor may decline the maximize outright.
-fn boot_ready() -> bool {
+fn boot_ready(boot: &Boot) -> bool {
     crate::window_geometry::controller()
         .source()
         .snapshot()
         .extent
         .is_some()
         && plat().mpv_host().host_ready()
-        && STARTUP_BG_APPLIED.load(std::sync::atomic::Ordering::Acquire)
+        && boot.startup_bg_applied
 }
 
 // =====================================================================
 // run_with_cef body — Rust port
 // =====================================================================
 
-const LOG_CEF: u8 = 2;
 // cef_log_severity_t ABI: 1 VERBOSE, 2 INFO, 3 WARNING, 4 ERROR.
 // Must match `jfn_cef::ffi::log_severity_from_int` / `client/events.rs`.
 const LOG_SEVERITY_VERBOSE: c_int = 1;
@@ -816,14 +811,14 @@ const LOG_SEVERITY_WARNING: c_int = 3;
 const LOG_SEVERITY_ERROR: c_int = 4;
 
 fn cef_severity_for_cef_filter() -> c_int {
-    // Map LOG_CEF level to CEF severity:
+    // Map the CEF category level to CEF severity:
     //   Trace/Debug -> VERBOSE, Info -> INFO, Warn -> WARNING, Error -> ERROR.
-    let e = jfn_logging::log_enabled;
-    if e(LOG_CEF, LEVEL_TRACE) || e(LOG_CEF, LEVEL_DEBUG) {
+    let e = |level| jfn_logging::log_enabled(Category::Cef, level);
+    if e(Level::Trace) || e(Level::Debug) {
         LOG_SEVERITY_VERBOSE
-    } else if e(LOG_CEF, LEVEL_INFO) {
+    } else if e(Level::Info) {
         LOG_SEVERITY_INFO
-    } else if e(LOG_CEF, LEVEL_WARN) {
+    } else if e(Level::Warn) {
         LOG_SEVERITY_WARNING
     } else {
         LOG_SEVERITY_ERROR
@@ -846,13 +841,24 @@ extern "C" fn h_theme_video_mode(active: bool) {
     jfn_color::theme::jfn_theme_color_set_video_mode(active);
 }
 extern "C" fn h_web_exec_js(js: *const c_char) {
-    if !js.is_null() {
-        unsafe { jfn_cef::business_web::jfn_web_exec_js(js) };
+    if js.is_null() {
+        return;
     }
+    let Some(overlay) = WEB_OVERLAY.lock().clone() else {
+        return;
+    };
+    let js = unsafe { CStr::from_ptr(js) }.to_string_lossy();
+    overlay.exec_js(&js);
 }
 extern "C" fn h_browsers_set_refresh_rate(hz: f64) {
     tracing::info!(target: "Main", "Display refresh rate changed: {hz} Hz");
-    jfn_cef::browsers::jfn_browsers_set_refresh_rate(hz);
+    let Some(rate) = jfn_gpu_paint::RefreshRate::from_hz(hz) else {
+        return;
+    };
+    jfn_gpu_paint::report_refresh(jfn_gpu_paint::RefreshSource::MpvDisplayFps, rate);
+    if let Some(overlay) = WEB_OVERLAY.lock().clone() {
+        overlay.set_refresh_rate(rate);
+    }
 }
 extern "C" fn h_theme_set_titlebar(rgb: u32) {
     plat().set_theme_color(rgb);
@@ -871,16 +877,10 @@ fn h_shutdown_wake_manager() {
 }
 
 /// Owns the run_with_cef body — invoked once by `jfn_app_main`.
-unsafe fn run_with_cef(ba: &BootArgs, instance: &Instance) -> c_int {
-    // 2. Platform init (PlatformScope). Cleanup happens in shutdown_runtime.
+unsafe fn run_with_cef(boot: &mut Boot, opts: &StartupOptions, instance: &Instance) -> c_int {
+    // Platform init already ran in `run_app`, ahead of the shell overlay and
+    // `CefInitialize`. Cleanup still happens in shutdown_runtime.
     let mpv_raw = jfn_mpv::boot::jfn_mpv_handle_get();
-    let platform_ok = plat().init(mpv_raw as *mut std::ffi::c_void);
-    if !platform_ok {
-        tracing::error!(target: "Main", "Platform init failed");
-        return 1;
-    }
-    tracing::info!(target: "Main", "Platform init ok");
-    PLATFORM_INITED.store(true, std::sync::atomic::Ordering::Release);
 
     // 3. Apply titlebar theme color before CefInitialize so the window doesn't
     //    sit with the system default palette during init.
@@ -893,25 +893,21 @@ unsafe fn run_with_cef(ba: &BootArgs, instance: &Instance) -> c_int {
     publish_device_profile(mpv_raw);
 
     // 5. CEF init flags + initialise.
-    if !ensure_cef_initialized(ba) {
+    if !ensure_cef_initialized(boot, opts) {
         return 1;
     }
+    let Some(cef) = boot.cef else {
+        return 1;
+    };
 
-    let hz = boot_mpv_reconcile(mpv_raw);
+    let rate = boot_mpv_reconcile();
 
-    let (manager_thread, main_layer) = init_main_browser(hz, shared_textures());
+    let (manager_thread, overlay) = start_web_overlay(rate, cef, boot.user_video_bg);
+    WEB_OVERLAY.lock().replace(overlay.clone());
 
     if !start_playback_coordination(instance) {
         return 1;
     }
-
-    // 14. Wait for the main browser to finish loading. Skipped when the
-    //     platform pumps CEF itself (external pump on the main thread):
-    //     blocking main here would starve the pump and never load.
-    if plat().cef_host().is_none() {
-        unsafe { jfn_cef::client::jfn_cef_layer_wait_for_load(main_layer) };
-    }
-    tracing::info!(target: "Main", "Main browser loaded");
 
     tracing::info!(target: "Main", "[FLOW] Running — about to enter run_main_loop");
 
@@ -925,11 +921,10 @@ unsafe fn run_with_cef(ba: &BootArgs, instance: &Instance) -> c_int {
     plat().run_main_loop();
     tracing::info!(target: "Main", "[FLOW] run_main_loop returned — browsers drained, running teardown");
 
-    shutdown_runtime(manager_thread);
+    if let Err(e) = shutdown_runtime(manager_thread, overlay) {
+        tracing::error!(target: "Main", "shutdown: {e}");
+        return 1;
+    }
 
     0
 }
-
-static PLATFORM_INITED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static CEF_INITED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static COORD_INITED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

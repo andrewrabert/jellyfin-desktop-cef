@@ -57,6 +57,15 @@ jobs:
       - name: Build app bundle
         run: cargo xtask install --prefix build/output
 
+      - name: Clippy
+        if: matrix.runner == 'macos-15'
+        run: cargo xtask clippy
+
+      - name: Test
+        env:
+          RUST_TEST_THREADS: 1
+        run: cargo xtask test
+
       - name: Create DMG
         run: |
           brew install create-dmg
