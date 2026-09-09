@@ -62,6 +62,8 @@ jobs:
         run: cargo xtask clippy
 
       - name: Test
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo xtask test
 
       - name: Create DMG

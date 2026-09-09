@@ -141,6 +141,8 @@ jobs:
         run: cargo xtask install --prefix build/output
 
       - name: Test
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo xtask test
 
       - name: Create DMG
